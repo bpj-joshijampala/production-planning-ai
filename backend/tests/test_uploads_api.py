@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.upload import ImportStagingRow, RawUploadArtifact, UploadBatch
-from tests.workbook_fixtures import REQUIRED_SHEETS, workbook_bytes
+from tests.workbook_fixtures import REQUIRED_SHEETS, minimal_workbook_rows, workbook_bytes
 
 
 @pytest.fixture()
@@ -49,7 +49,7 @@ def test_upload_xlsx_stores_artifact_and_metadata(client: TestClient) -> None:
     assert response.status_code == 201
     payload = response.json()
     assert payload["original_filename"] == "machine_plan.xlsx"
-    assert payload["status"] == "UPLOADED"
+    assert payload["status"] == "VALIDATED"
     assert payload["file_size_bytes"] == len(content)
     assert payload["validation_error_count"] == 0
     assert payload["validation_warning_count"] == 0
@@ -162,3 +162,146 @@ def test_upload_rejects_unreadable_xlsx(client: TestClient) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "INVALID_WORKBOOK"
+
+
+def test_upload_validation_flags_missing_required_sheet_and_column(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    del sheets["Vendor_Master"]
+    sheets["Valve_Plan"][0].remove("Customer")
+    sheets["Valve_Plan"][1].remove("Acme")
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("missing-structure.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert upload_response.status_code == 201
+    upload_payload = upload_response.json()
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+    assert upload_payload["validation_error_count"] >= 2
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "MISSING_SHEET" in issue_codes
+    assert "MISSING_COLUMN" in issue_codes
+
+
+def test_upload_validation_flags_invalid_dates_numbers_and_booleans(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Valve_Plan"][1][3] = "not-a-date"
+    sheets["Valve_Plan"][1][5] = "not-a-number"
+    sheets["Component_Status"][1][3] = "maybe"
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("bad-values.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issues = issues_response.json()["issues"]
+    issue_codes = {issue["issue_code"] for issue in issues}
+
+    assert "INVALID_DATE" in issue_codes
+    assert "INVALID_NUMBER" in issue_codes
+    assert "INVALID_BOOLEAN" in issue_codes
+    assert all(issue["row_number"] == 2 for issue in issues)
+
+
+def test_upload_validation_flags_broken_master_references(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"][1][0] = "V-404"
+    sheets["Component_Status"][1][1] = "Unknown Component"
+    sheets["Routing_Master"][0].append("Alt_Machine")
+    sheets["Routing_Master"][1].append("DRILL")
+    sheets["Routing_Master"][1][3] = "VTL"
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("broken-references.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "UNKNOWN_VALVE_ID" in issue_codes
+    assert "MISSING_ROUTING" in issue_codes
+    assert "UNKNOWN_MACHINE_TYPE" in issue_codes
+    assert "UNKNOWN_ALT_MACHINE" in issue_codes
+
+
+def test_upload_validation_generates_missing_component_line_numbers(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"].append(["V-100", "Body", 1, "Y", "N", "2026-04-25", "Y"])
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("generated-lines.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_id = upload_response.json()["id"]
+
+    from app.db.session import create_session_factory
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(ImportStagingRow)
+                .where(ImportStagingRow.upload_batch_id == upload_id)
+                .where(ImportStagingRow.sheet_name == "Component_Status")
+                .order_by(ImportStagingRow.row_number)
+            )
+        )
+
+    payloads = [row.normalized_payload_json for row in rows]
+
+    assert '"component_line_no":1' in payloads[0]
+    assert '"component_line_no":2' in payloads[1]
+    assert upload_response.json()["status"] == "VALIDATED"
+
+
+def test_upload_validation_rejects_duplicate_component_line_numbers(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"][0].insert(1, "Component_Line_No")
+    sheets["Component_Status"][1].insert(1, 1)
+    sheets["Component_Status"].append(["V-100", 1, "Body", 1, "Y", "N", "2026-04-25", "Y"])
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("duplicate-lines.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "DUPLICATE_COMPONENT_LINE_NO" in issue_codes
+
+
+def test_upload_validation_keeps_vendor_gap_as_warning(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Vendor_Master"][1][5] = "N"
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("vendor-warning.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATED"
+    assert upload_payload["validation_error_count"] == 0
+    assert upload_payload["validation_warning_count"] == 1
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issues = issues_response.json()["issues"]
+
+    assert issues[0]["severity"] == "WARNING"
+    assert issues[0]["issue_code"] == "NO_APPROVED_VENDOR"

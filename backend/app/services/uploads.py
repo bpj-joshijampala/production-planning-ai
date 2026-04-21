@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
-from app.imports.workbook import ParsedWorkbookRow, WorkbookParseError, parse_workbook
+from app.imports.validation import count_issues, validate_import, with_generated_component_line_numbers
+from app.imports.workbook import ParsedWorkbookRow, WorkbookParseError, parse_workbook_with_metadata
 from app.models.upload import ImportStagingRow, ImportValidationIssue, RawUploadArtifact, UploadBatch
 from app.schemas.upload import (
     RawUploadArtifactResponse,
@@ -46,12 +47,13 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
         )
 
     try:
-        parsed_rows = parse_workbook(content)
+        parsed_workbook = parse_workbook_with_metadata(content)
     except WorkbookParseError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "INVALID_WORKBOOK", "message": str(exc)},
         ) from exc
+    parsed_workbook = with_generated_component_line_numbers(parsed_workbook)
 
     upload_id = new_uuid()
     artifact_id = new_uuid()
@@ -63,6 +65,10 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
     storage_path = upload_dir / stored_filename
     storage_path.write_bytes(content)
 
+    staging_rows = _to_staging_rows(upload_id, parsed_workbook.rows, uploaded_at)
+    validation_issues = validate_import(upload_id, parsed_workbook, staging_rows, uploaded_at)
+    blocking_count, warning_count = count_issues(validation_issues)
+
     upload_batch = UploadBatch(
         id=upload_id,
         original_filename=original_filename,
@@ -71,9 +77,9 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
         file_size_bytes=len(content),
         uploaded_by_user_id=DEV_USER_ID,
         uploaded_at=uploaded_at,
-        status="UPLOADED",
-        validation_error_count=0,
-        validation_warning_count=0,
+        status="VALIDATION_FAILED" if blocking_count else "VALIDATED",
+        validation_error_count=blocking_count,
+        validation_warning_count=warning_count,
     )
     artifact = RawUploadArtifact(
         id=artifact_id,
@@ -86,7 +92,8 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
     db.add(upload_batch)
     db.flush()
     db.add(artifact)
-    db.add_all(_to_staging_rows(upload_id, parsed_rows, uploaded_at))
+    db.add_all(staging_rows)
+    db.add_all(validation_issues)
     db.commit()
     db.refresh(upload_batch)
     db.refresh(artifact)

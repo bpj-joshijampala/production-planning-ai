@@ -78,13 +78,25 @@ class ParsedWorkbookRow:
     row_hash: str
 
 
+@dataclass(frozen=True)
+class ParsedWorkbook:
+    workbook_sheet_names: tuple[str, ...]
+    headers_by_sheet: dict[str, tuple[str, ...]]
+    rows: list[ParsedWorkbookRow]
+
+
 def parse_workbook(content: bytes) -> list[ParsedWorkbookRow]:
+    return parse_workbook_with_metadata(content).rows
+
+
+def parse_workbook_with_metadata(content: bytes) -> ParsedWorkbook:
     try:
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=True)
     except (BadZipFile, InvalidFileException, OSError, ValueError) as exc:
         raise WorkbookParseError("Uploaded file is not a readable .xlsx workbook.") from exc
 
     parsed_rows: list[ParsedWorkbookRow] = []
+    headers_by_sheet: dict[str, tuple[str, ...]] = {}
     for sheet_name in REQUIRED_SHEETS:
         if sheet_name not in workbook.sheetnames:
             continue
@@ -93,26 +105,33 @@ def parse_workbook(content: bytes) -> list[ParsedWorkbookRow]:
         rows = sheet.iter_rows(values_only=True)
         raw_headers = next(rows, None)
         if raw_headers is None:
+            headers_by_sheet[sheet_name] = ()
             continue
 
         headers = [normalize_header(header) if header is not None else "" for header in raw_headers]
+        headers_by_sheet[sheet_name] = tuple(header for header in headers if header)
         for row_number, values in enumerate(rows, start=2):
             if _row_is_blank(values):
                 continue
 
             payload = _payload_from_row(headers, values)
-            payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
             parsed_rows.append(
                 ParsedWorkbookRow(
                     sheet_name=sheet_name,
                     row_number=row_number,
                     payload=payload,
-                    row_hash=sha256(payload_json.encode("utf-8")).hexdigest(),
+                    row_hash=hash_payload(payload),
                 )
             )
 
+    workbook_sheet_names = tuple(workbook.sheetnames)
     workbook.close()
-    return parsed_rows
+    return ParsedWorkbook(workbook_sheet_names=workbook_sheet_names, headers_by_sheet=headers_by_sheet, rows=parsed_rows)
+
+
+def hash_payload(payload: dict[str, Any]) -> str:
+    payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return sha256(payload_json.encode("utf-8")).hexdigest()
 
 
 def normalize_header(header: Any) -> str:
