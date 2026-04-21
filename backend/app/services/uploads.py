@@ -1,4 +1,5 @@
 from hashlib import sha256
+import json
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
@@ -8,7 +9,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
-from app.models.upload import ImportValidationIssue, RawUploadArtifact, UploadBatch
+from app.imports.workbook import ParsedWorkbookRow, WorkbookParseError, parse_workbook
+from app.models.upload import ImportStagingRow, ImportValidationIssue, RawUploadArtifact, UploadBatch
 from app.schemas.upload import (
     RawUploadArtifactResponse,
     UploadBatchResponse,
@@ -43,6 +45,14 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
             },
         )
 
+    try:
+        parsed_rows = parse_workbook(content)
+    except WorkbookParseError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "INVALID_WORKBOOK", "message": str(exc)},
+        ) from exc
+
     upload_id = new_uuid()
     artifact_id = new_uuid()
     uploaded_at = utc_now_iso()
@@ -76,6 +86,7 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
     db.add(upload_batch)
     db.flush()
     db.add(artifact)
+    db.add_all(_to_staging_rows(upload_id, parsed_rows, uploaded_at))
     db.commit()
     db.refresh(upload_batch)
     db.refresh(artifact)
@@ -147,6 +158,23 @@ def _to_upload_response(upload_batch: UploadBatch, artifact: RawUploadArtifact) 
         validation_warning_count=upload_batch.validation_warning_count,
         artifact=RawUploadArtifactResponse.model_validate(artifact),
     )
+
+
+def _to_staging_rows(
+    upload_batch_id: str, parsed_rows: list[ParsedWorkbookRow], created_at: str
+) -> list[ImportStagingRow]:
+    return [
+        ImportStagingRow(
+            id=new_uuid(),
+            upload_batch_id=upload_batch_id,
+            sheet_name=row.sheet_name,
+            row_number=row.row_number,
+            normalized_payload_json=json.dumps(row.payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True),
+            row_hash=row.row_hash,
+            created_at=created_at,
+        )
+        for row in parsed_rows
+    ]
 
 
 def _safe_filename(filename: str | None) -> str:

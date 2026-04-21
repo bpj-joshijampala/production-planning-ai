@@ -9,7 +9,8 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.main import create_app
-from app.models.upload import RawUploadArtifact, UploadBatch
+from app.models.upload import ImportStagingRow, RawUploadArtifact, UploadBatch
+from tests.workbook_fixtures import REQUIRED_SHEETS, workbook_bytes
 
 
 @pytest.fixture()
@@ -32,7 +33,7 @@ def client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]:  # type:
 
 
 def test_upload_xlsx_stores_artifact_and_metadata(client: TestClient) -> None:
-    content = b"minimal workbook bytes for m1-e2"
+    content = workbook_bytes()
 
     response = client.post(
         "/api/v1/uploads",
@@ -58,7 +59,7 @@ def test_upload_xlsx_stores_artifact_and_metadata(client: TestClient) -> None:
 def test_get_upload_returns_artifact_trace(client: TestClient) -> None:
     upload_response = client.post(
         "/api/v1/uploads",
-        files={"file": ("trace.xlsx", b"traceable bytes", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("trace.xlsx", workbook_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     upload_id = upload_response.json()["id"]
 
@@ -82,7 +83,7 @@ def test_upload_rejects_unsupported_file_types(client: TestClient, filename: str
 def test_validation_issues_endpoint_returns_empty_summary_for_artifact_only_upload(client: TestClient) -> None:
     upload_response = client.post(
         "/api/v1/uploads",
-        files={"file": ("clean.xlsx", b"no parser yet", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("clean.xlsx", workbook_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     upload_id = upload_response.json()["id"]
 
@@ -106,7 +107,7 @@ def test_get_missing_upload_returns_404(client: TestClient) -> None:
 def test_upload_records_are_queryable_in_database(client: TestClient) -> None:
     response = client.post(
         "/api/v1/uploads",
-        files={"file": ("queryable.xlsx", b"queryable bytes", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        files={"file": ("queryable.xlsx", workbook_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
     upload_id = response.json()["id"]
 
@@ -121,3 +122,43 @@ def test_upload_records_are_queryable_in_database(client: TestClient) -> None:
     assert upload.original_filename == "queryable.xlsx"
     assert artifact is not None
     assert Path(artifact.storage_path).exists()
+
+
+def test_upload_stages_rows_for_supported_workbook_sheets(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("staged.xlsx", workbook_bytes(include_extra_sheet=True), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_id = response.json()["id"]
+
+    from app.db.session import create_session_factory
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        rows = list(
+            session.scalars(
+                select(ImportStagingRow)
+                .where(ImportStagingRow.upload_batch_id == upload_id)
+                .order_by(ImportStagingRow.sheet_name)
+            )
+        )
+
+    assert {row.sheet_name for row in rows} == set(REQUIRED_SHEETS)
+    assert len(rows) == 5
+    assert all(row.row_hash for row in rows)
+
+
+def test_upload_rejects_unreadable_xlsx(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/uploads",
+        files={
+            "file": (
+                "broken.xlsx",
+                b"not really an xlsx file",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "INVALID_WORKBOOK"
