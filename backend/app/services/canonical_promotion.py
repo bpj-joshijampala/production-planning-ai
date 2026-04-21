@@ -30,7 +30,9 @@ class PromotionError(ValueError):
         self.message = message
 
 
-def promote_upload_to_canonical(upload_batch_id: str, planning_run_id: str, db: Session) -> PromotionResult:
+def promote_upload_to_canonical(
+    upload_batch_id: str, planning_run_id: str, db: Session, *, commit: bool = True
+) -> PromotionResult:
     upload_batch = db.get(UploadBatch, upload_batch_id)
     if upload_batch is None:
         raise PromotionError("UPLOAD_NOT_FOUND", f"Upload {upload_batch_id} was not found.")
@@ -75,7 +77,10 @@ def promote_upload_to_canonical(upload_batch_id: str, planning_run_id: str, db: 
     db.add_all(machines)
     db.add_all(vendors)
     upload_batch.status = "PROMOTED"
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
     return PromotionResult(
         upload_batch_id=upload_batch_id,
