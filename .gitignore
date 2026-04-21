@@ -1,0 +1,36 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Runtime state
+data/*
+!data/.gitkeep
+!data/uploads/
+!data/uploads/.gitkeep
+!data/exports/
+!data/exports/.gitkeep
+
+# Local environment
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
