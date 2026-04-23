@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -7,9 +8,11 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.core.config import Settings
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.upload import ImportStagingRow, RawUploadArtifact, UploadBatch
+from app.services.uploads import create_upload
 from tests.workbook_fixtures import REQUIRED_SHEETS, minimal_workbook_rows, workbook_bytes
 
 
@@ -310,6 +313,29 @@ def test_upload_validation_rejects_duplicate_canonical_business_keys(client: Tes
     assert "DUPLICATE_VENDOR_ID" in issue_codes
 
 
+def test_upload_validation_rejects_duplicate_normalized_columns(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Valve_Plan"][0].insert(1, "Valve_ID")
+    sheets["Valve_Plan"][1].insert(1, "V-999")
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("duplicate-columns.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    duplicate_column_issues = [
+        issue for issue in issues_response.json()["issues"] if issue["issue_code"] == "DUPLICATE_COLUMN"
+    ]
+
+    assert duplicate_column_issues
+    assert duplicate_column_issues[0]["sheet_name"] == "Valve_Plan"
+    assert duplicate_column_issues[0]["field_name"] == "valve_id"
+
+
 def test_upload_validation_rejects_required_sheets_with_no_data_rows(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     sheets = {sheet_name: [rows[0]] for sheet_name, rows in sheets.items()}
@@ -347,3 +373,51 @@ def test_upload_validation_keeps_vendor_gap_as_warning(client: TestClient) -> No
 
     assert issues[0]["severity"] == "WARNING"
     assert issues[0]["issue_code"] == "NO_APPROVED_VENDOR"
+
+
+def test_create_upload_removes_stored_file_when_database_commit_fails(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    upload_dir = tmp_path / "uploads"
+    settings = Settings(
+        database_url=f"sqlite:///{(tmp_path / 'unused.sqlite3').as_posix()}",
+        upload_dir=upload_dir,
+        export_dir=tmp_path / "exports",
+    )
+    failing_db = _FailingCommitSession()
+    upload_file = _FakeUploadFile(
+        filename="plan.xlsx",
+        content=workbook_bytes(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+    with pytest.raises(RuntimeError, match="database commit failed"):
+        create_upload(file=upload_file, db=failing_db, settings=settings)  # type: ignore[arg-type]
+
+    assert failing_db.rolled_back is True
+    assert not list(upload_dir.rglob("*"))
+
+
+class _FailingCommitSession:
+    def __init__(self) -> None:
+        self.rolled_back = False
+
+    def add(self, _row: object) -> None:
+        return None
+
+    def flush(self) -> None:
+        return None
+
+    def add_all(self, _rows: list[object]) -> None:
+        return None
+
+    def commit(self) -> None:
+        raise RuntimeError("database commit failed")
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+
+class _FakeUploadFile:
+    def __init__(self, *, filename: str, content: bytes, content_type: str) -> None:
+        self.filename = filename
+        self.file = BytesIO(content)
+        self.content_type = content_type

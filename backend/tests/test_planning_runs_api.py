@@ -104,6 +104,16 @@ def test_create_planning_run_defaults_to_seven_day_horizon(client: TestClient) -
     assert response.json()["planning_horizon_days"] == 7
 
 
+def test_create_planning_run_defaults_start_date_to_upload_date(client: TestClient) -> None:
+    upload_payload = _upload_workbook(client, workbook_bytes())
+
+    response = client.post("/api/v1/planning-runs", json={"upload_batch_id": upload_payload["id"]})
+
+    assert response.status_code == 201
+    assert response.json()["planning_start_date"] == str(upload_payload["uploaded_at"])[:10]
+    assert response.json()["planning_horizon_days"] == 7
+
+
 def test_create_planning_run_allows_warning_only_upload(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     sheets["Vendor_Master"][1][5] = "N"

@@ -117,11 +117,11 @@ class PlanningInput:
     planning_run_id: str
     upload_batch_id: str
     settings: PlanningSettings
-    valves: list[ValveInput]
-    component_statuses: list[ComponentStatusInput]
-    routing_operations: list[RoutingOperationInput]
-    machines: list[MachineInput]
-    vendors: list[VendorInput]
+    valves: tuple[ValveInput, ...]
+    component_statuses: tuple[ComponentStatusInput, ...]
+    routing_operations: tuple[RoutingOperationInput, ...]
+    machines: tuple[MachineInput, ...]
+    vendors: tuple[VendorInput, ...]
 
 
 def build_planning_settings(
@@ -153,8 +153,8 @@ def load_planning_input(
         raise PlanningInputError("PLANNING_RUN_NOT_FOUND", f"PlanningRun {planning_run_id} was not found.")
 
     settings = _resolve_settings(planning_run, settings_override)
-    valves = [_to_valve_input(row) for row in _canonical_rows(db, Valve, planning_run.id, Valve.valve_id)]
-    component_statuses = [
+    valves = tuple(_to_valve_input(row) for row in _canonical_rows(db, Valve, planning_run.id, Valve.valve_id))
+    component_statuses = tuple(
         _to_component_status_input(row)
         for row in _canonical_rows(
             db,
@@ -163,8 +163,8 @@ def load_planning_input(
             ComponentStatus.valve_id,
             ComponentStatus.component_line_no,
         )
-    ]
-    routing_operations = [
+    )
+    routing_operations = tuple(
         _to_routing_operation_input(row)
         for row in _canonical_rows(
             db,
@@ -173,9 +173,9 @@ def load_planning_input(
             RoutingOperation.component,
             RoutingOperation.operation_no,
         )
-    ]
-    machines = [_to_machine_input(row) for row in _canonical_rows(db, Machine, planning_run.id, Machine.machine_id)]
-    vendors = [_to_vendor_input(row) for row in _canonical_rows(db, Vendor, planning_run.id, Vendor.vendor_id)]
+    )
+    machines = tuple(_to_machine_input(row) for row in _canonical_rows(db, Machine, planning_run.id, Machine.machine_id))
+    vendors = tuple(_to_vendor_input(row) for row in _canonical_rows(db, Vendor, planning_run.id, Vendor.vendor_id))
 
     _ensure_required_inputs(
         planning_run_id=planning_run.id,
@@ -226,7 +226,7 @@ def _canonical_rows(db: Session, model: type[Any], planning_run_id: str, *order_
     return list(db.scalars(select(model).where(model.planning_run_id == planning_run_id).order_by(*order_by)))
 
 
-def _ensure_required_inputs(planning_run_id: str, **collections: list[object]) -> None:
+def _ensure_required_inputs(planning_run_id: str, **collections: tuple[object, ...]) -> None:
     for collection_name, rows in collections.items():
         if rows:
             continue

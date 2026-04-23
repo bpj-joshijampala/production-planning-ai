@@ -1,3 +1,4 @@
+from contextlib import suppress
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -89,12 +90,18 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
         created_at=uploaded_at,
     )
 
-    db.add(upload_batch)
-    db.flush()
-    db.add(artifact)
-    db.add_all(staging_rows)
-    db.add_all(validation_issues)
-    db.commit()
+    try:
+        db.add(upload_batch)
+        db.flush()
+        db.add(artifact)
+        db.add_all(staging_rows)
+        db.add_all(validation_issues)
+        db.commit()
+    except Exception:
+        db.rollback()
+        _remove_stored_upload(storage_path, upload_dir)
+        raise
+
     db.refresh(upload_batch)
     db.refresh(artifact)
 
@@ -205,6 +212,13 @@ def _validate_supported_extension(filename: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "UNSUPPORTED_FILE_TYPE", "message": known_message},
         )
+
+
+def _remove_stored_upload(storage_path: Path, upload_dir: Path) -> None:
+    with suppress(FileNotFoundError):
+        storage_path.unlink()
+    with suppress(OSError):
+        upload_dir.rmdir()
 
 
 def raise_upload_not_found(upload_batch_id: str) -> None:

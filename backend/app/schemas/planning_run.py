@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 class PlanningRunCreateRequest(BaseModel):
     upload_batch_id: str
-    planning_start_date: date
+    planning_start_date: date | None = None
     planning_horizon_days: Literal[7, 14] = 7
 
 

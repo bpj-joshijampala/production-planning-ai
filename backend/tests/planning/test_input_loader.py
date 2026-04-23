@@ -52,6 +52,11 @@ def test_load_planning_input_returns_ordered_canonical_records_and_run_settings(
     assert planning_input.settings.planning_horizon_days == 14
     assert planning_input.settings.planning_end_date == date(2026, 5, 5)
     assert planning_input.settings.target_throughput_value_cr == pytest.approx(5.0)
+    assert isinstance(planning_input.valves, tuple)
+    assert isinstance(planning_input.component_statuses, tuple)
+    assert isinstance(planning_input.routing_operations, tuple)
+    assert isinstance(planning_input.machines, tuple)
+    assert isinstance(planning_input.vendors, tuple)
 
     assert [valve.valve_id for valve in planning_input.valves] == ["V-050", "V-100"]
     assert planning_input.valves[0].dispatch_date == date(2026, 4, 30)
@@ -114,6 +119,17 @@ def test_load_planning_input_applies_settings_override_without_mutating_planning
     assert planning_run is not None
     assert planning_run.planning_start_date == "2026-04-21"
     assert planning_run.planning_horizon_days == 7
+
+
+def test_load_planning_input_collections_are_immutable(client: TestClient) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes())
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        planning_input = load_planning_input(planning_run_id=planning_run_id, db=session)
+
+    with pytest.raises(AttributeError):
+        planning_input.valves.append(planning_input.valves[0])  # type: ignore[attr-defined]
 
 
 def test_build_planning_settings_defaults_to_seven_day_horizon_and_scales_target() -> None:

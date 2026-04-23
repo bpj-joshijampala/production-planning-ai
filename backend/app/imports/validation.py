@@ -154,6 +154,7 @@ def validate_import(
     staging_id_by_source = {(row.sheet_name, row.row_number): row.id for row in staging_rows}
     issue_builder = _IssueBuilder(upload_batch_id, staging_id_by_source, created_at)
 
+    _validate_duplicate_columns(parsed_workbook, issue_builder)
     _validate_required_sheets_and_columns(parsed_workbook, issue_builder)
     _validate_required_sheet_row_presence(parsed_workbook, issue_builder)
     _validate_row_values(parsed_workbook, issue_builder)
@@ -229,6 +230,25 @@ def _validate_required_sheets_and_columns(parsed_workbook: ParsedWorkbook, issue
                     sheet_name=sheet_name,
                     field_name=column,
                 )
+
+
+def _validate_duplicate_columns(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    for sheet_name, headers in parsed_workbook.headers_by_sheet.items():
+        occurrences_by_header: dict[str, int] = defaultdict(int)
+        for header in headers:
+            occurrences_by_header[header] += 1
+
+        for header, occurrence_count in occurrences_by_header.items():
+            if occurrence_count <= 1:
+                continue
+
+            issue_builder.add(
+                severity="BLOCKING",
+                issue_code="DUPLICATE_COLUMN",
+                message=f"Column {header} appears {occurrence_count} times after header normalization.",
+                sheet_name=sheet_name,
+                field_name=header,
+            )
 
 
 def _validate_required_sheet_row_presence(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:

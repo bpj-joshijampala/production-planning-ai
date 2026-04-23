@@ -1,3 +1,4 @@
+from datetime import date
 from hashlib import sha256
 import json
 from typing import Any
@@ -25,7 +26,7 @@ def create_planning_run(request: PlanningRunCreateRequest, db: Session) -> Plann
     planning_run = PlanningRun(
         id=new_uuid(),
         upload_batch_id=upload_batch.id,
-        planning_start_date=request.planning_start_date.isoformat(),
+        planning_start_date=_resolve_planning_start_date(request, upload_batch).isoformat(),
         planning_horizon_days=request.planning_horizon_days,
         status="CREATED",
         created_by_user_id=DEV_USER_ID,
@@ -64,6 +65,21 @@ def _load_upload_for_planning(upload_batch_id: str, db: Session) -> UploadBatch:
             detail={"code": "UPLOAD_NOT_FOUND", "message": f"Upload {upload_batch_id} was not found."},
         )
     return upload_batch
+
+
+def _resolve_planning_start_date(request: PlanningRunCreateRequest, upload_batch: UploadBatch) -> date:
+    if request.planning_start_date is not None:
+        return request.planning_start_date
+    try:
+        return date.fromisoformat(upload_batch.uploaded_at[:10])
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "INVALID_UPLOAD_TIMESTAMP",
+                "message": f"Upload {upload_batch.id} does not have a valid upload date.",
+            },
+        ) from exc
 
 
 def _ensure_upload_can_create_planning_run(upload_batch: UploadBatch, db: Session) -> None:
