@@ -148,6 +148,25 @@ def test_create_planning_run_rejects_upload_with_blocking_validation_issues(clie
     assert planning_run_count == 0
 
 
+def test_create_planning_run_rejects_duplicate_key_upload_without_server_error(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Valve_Plan"].append(["V-100", "O-101", "Acme 2", "2026-05-02", "2026-04-29", 2.0])
+    upload_payload = _upload_workbook(client, workbook_bytes(sheets=sheets))
+
+    response = client.post(
+        "/api/v1/planning-runs",
+        json={
+            "upload_batch_id": upload_payload["id"],
+            "planning_start_date": "2026-04-21",
+            "planning_horizon_days": 7,
+        },
+    )
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "VALIDATION_BLOCKED"
+
+
 def test_create_planning_run_rejects_missing_upload(client: TestClient) -> None:
     response = client.post(
         "/api/v1/planning-runs",

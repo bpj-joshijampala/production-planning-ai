@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.ids import new_uuid
@@ -70,17 +71,24 @@ def promote_upload_to_canonical(
     machines = [_to_machine(planning_run_id, payload) for payload in rows_by_sheet["Machine_Master"]]
     vendors = [_to_vendor(planning_run_id, payload) for payload in rows_by_sheet["Vendor_Master"]]
 
-    db.add_all(valves)
-    db.flush()
-    db.add_all(component_statuses)
-    db.add_all(routing_operations)
-    db.add_all(machines)
-    db.add_all(vendors)
-    upload_batch.status = "PROMOTED"
-    if commit:
-        db.commit()
-    else:
+    try:
+        db.add_all(valves)
         db.flush()
+        db.add_all(component_statuses)
+        db.add_all(routing_operations)
+        db.add_all(machines)
+        db.add_all(vendors)
+        upload_batch.status = "PROMOTED"
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise PromotionError(
+            "PROMOTION_INTEGRITY_ERROR",
+            "Canonical promotion violated database constraints. Re-run validation or inspect staged rows.",
+        ) from exc
 
     return PromotionResult(
         upload_batch_id=upload_batch_id,

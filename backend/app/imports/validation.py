@@ -155,8 +155,10 @@ def validate_import(
     issue_builder = _IssueBuilder(upload_batch_id, staging_id_by_source, created_at)
 
     _validate_required_sheets_and_columns(parsed_workbook, issue_builder)
+    _validate_required_sheet_row_presence(parsed_workbook, issue_builder)
     _validate_row_values(parsed_workbook, issue_builder)
     _validate_component_line_uniqueness(parsed_workbook, issue_builder)
+    _validate_canonical_unique_keys(parsed_workbook, issue_builder)
     _validate_references(parsed_workbook, issue_builder)
 
     return issue_builder.issues
@@ -227,6 +229,20 @@ def _validate_required_sheets_and_columns(parsed_workbook: ParsedWorkbook, issue
                     sheet_name=sheet_name,
                     field_name=column,
                 )
+
+
+def _validate_required_sheet_row_presence(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    present_sheets = set(parsed_workbook.workbook_sheet_names)
+    rows_by_sheet = _rows_by_sheet(parsed_workbook.rows)
+
+    for sheet_name in REQUIRED_COLUMNS_BY_SHEET:
+        if sheet_name in present_sheets and not rows_by_sheet[sheet_name]:
+            issue_builder.add(
+                severity="BLOCKING",
+                issue_code="EMPTY_SHEET",
+                message=f"Required sheet {sheet_name} must include at least one data row.",
+                sheet_name=sheet_name,
+            )
 
 
 def _validate_row_values(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
@@ -395,6 +411,88 @@ def _validate_component_line_uniqueness(parsed_workbook: ParsedWorkbook, issue_b
                 row_number=row.row_number,
                 field_name="component_line_no",
             )
+
+
+def _validate_canonical_unique_keys(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    rows_by_sheet = _rows_by_sheet(parsed_workbook.rows)
+    _validate_unique_key(
+        rows_by_sheet["Valve_Plan"],
+        ("valve_id",),
+        issue_code="DUPLICATE_VALVE_ID",
+        field_name="valve_id",
+        label="Valve_ID",
+        issue_builder=issue_builder,
+    )
+    _validate_unique_key(
+        rows_by_sheet["Routing_Master"],
+        ("component", "operation_no"),
+        issue_code="DUPLICATE_ROUTING_OPERATION",
+        field_name="operation_no",
+        label="Component + Operation_No",
+        issue_builder=issue_builder,
+    )
+    _validate_unique_key(
+        rows_by_sheet["Machine_Master"],
+        ("machine_id",),
+        issue_code="DUPLICATE_MACHINE_ID",
+        field_name="machine_id",
+        label="Machine_ID",
+        issue_builder=issue_builder,
+    )
+    _validate_unique_key(
+        rows_by_sheet["Vendor_Master"],
+        ("vendor_id",),
+        issue_code="DUPLICATE_VENDOR_ID",
+        field_name="vendor_id",
+        label="Vendor_ID",
+        issue_builder=issue_builder,
+    )
+
+
+def _validate_unique_key(
+    rows: list[ParsedWorkbookRow],
+    fields: tuple[str, ...],
+    *,
+    issue_code: str,
+    field_name: str,
+    label: str,
+    issue_builder: _IssueBuilder,
+) -> None:
+    rows_by_key: dict[tuple[Any, ...], list[ParsedWorkbookRow]] = defaultdict(list)
+    for row in rows:
+        key = _key_for_row(row, fields)
+        if key is None:
+            continue
+        rows_by_key[key].append(row)
+
+    for key, duplicate_rows in rows_by_key.items():
+        if len(duplicate_rows) <= 1:
+            continue
+
+        key_text = " + ".join(str(part) for part in key)
+        for row in duplicate_rows:
+            issue_builder.add(
+                severity="BLOCKING",
+                issue_code=issue_code,
+                message=f"Duplicate {label} value {key_text}.",
+                sheet_name=row.sheet_name,
+                row_number=row.row_number,
+                field_name=field_name,
+            )
+
+
+def _key_for_row(row: ParsedWorkbookRow, fields: tuple[str, ...]) -> tuple[Any, ...] | None:
+    key_parts: list[Any] = []
+    for field_name in fields:
+        if field_name == "operation_no":
+            value = _parse_int(row.payload.get(field_name))
+        else:
+            value = _clean_text(row.payload.get(field_name))
+
+        if value is None or value == "":
+            return None
+        key_parts.append(value)
+    return tuple(key_parts)
 
 
 def _validate_references(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:

@@ -286,6 +286,48 @@ def test_upload_validation_rejects_duplicate_component_line_numbers(client: Test
     assert "DUPLICATE_COMPONENT_LINE_NO" in issue_codes
 
 
+def test_upload_validation_rejects_duplicate_canonical_business_keys(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Valve_Plan"].append(["V-100", "O-101", "Acme 2", "2026-05-02", "2026-04-29", 2.0])
+    sheets["Routing_Master"].append(["Body", 10, "HBM finish", "HBM", 2, "N"])
+    sheets["Machine_Master"].append(["HBM-1", "HBM", 8, 75, 4, "Y"])
+    sheets["Vendor_Master"].append(["VEN-1", "Vendor One Duplicate", "HBM", 4, 1, "Y"])
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("duplicate-keys.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "DUPLICATE_VALVE_ID" in issue_codes
+    assert "DUPLICATE_ROUTING_OPERATION" in issue_codes
+    assert "DUPLICATE_MACHINE_ID" in issue_codes
+    assert "DUPLICATE_VENDOR_ID" in issue_codes
+
+
+def test_upload_validation_rejects_required_sheets_with_no_data_rows(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets = {sheet_name: [rows[0]] for sheet_name, rows in sheets.items()}
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("headers-only.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issues = issues_response.json()["issues"]
+
+    assert {issue["sheet_name"] for issue in issues if issue["issue_code"] == "EMPTY_SHEET"} == set(REQUIRED_SHEETS)
+
+
 def test_upload_validation_keeps_vendor_gap_as_warning(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     sheets["Vendor_Master"][1][5] = "N"

@@ -11,7 +11,7 @@ from app.db.session import create_session_factory
 from app.main import create_app
 from app.models.canonical import ComponentStatus, Machine, RoutingOperation, Valve, Vendor
 from app.models.planning_run import PlanningRun
-from app.models.upload import UploadBatch
+from app.models.upload import ImportStagingRow, UploadBatch
 from app.services.canonical_promotion import PromotionError, promote_upload_to_canonical
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
 
@@ -139,6 +139,44 @@ def test_promote_rejects_second_promotion_for_same_planning_run(client: TestClie
     with session_factory() as session:
         with pytest.raises(PromotionError, match="CANONICAL_ALREADY_PROMOTED"):
             promote_upload_to_canonical(upload_batch_id=upload_id, planning_run_id=planning_run_id, db=session)
+
+
+def test_promote_converts_database_integrity_errors_to_promotion_errors(client: TestClient) -> None:
+    upload_id = _upload_workbook(client, workbook_bytes())
+    planning_run_id = _create_planning_run(upload_id)
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        valve_row = session.scalar(
+            select(ImportStagingRow)
+            .where(ImportStagingRow.upload_batch_id == upload_id)
+            .where(ImportStagingRow.sheet_name == "Valve_Plan")
+        )
+        assert valve_row is not None
+        session.add(
+            ImportStagingRow(
+                id="duplicate-staging-valve",
+                upload_batch_id=upload_id,
+                sheet_name="Valve_Plan",
+                row_number=99,
+                normalized_payload_json=valve_row.normalized_payload_json,
+                row_hash=valve_row.row_hash,
+                created_at=valve_row.created_at,
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        with pytest.raises(PromotionError, match="PROMOTION_INTEGRITY_ERROR"):
+            promote_upload_to_canonical(upload_batch_id=upload_id, planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        valve_count = session.scalar(select(func.count()).select_from(Valve).where(Valve.planning_run_id == planning_run_id))
+        upload = session.get(UploadBatch, upload_id)
+
+    assert valve_count == 0
+    assert upload is not None
+    assert upload.status == "VALIDATED"
 
 
 def test_promote_preserves_generated_component_line_numbers_for_repeated_components(client: TestClient) -> None:
