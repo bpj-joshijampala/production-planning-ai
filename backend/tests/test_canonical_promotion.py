@@ -202,6 +202,27 @@ def test_promote_preserves_generated_component_line_numbers_for_repeated_compone
     assert [component.component for component in components] == ["Body", "Body"]
 
 
+def test_promote_defaults_ready_component_missing_expected_ready_date_to_planning_start_date(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"][1][3] = "N"
+    sheets["Component_Status"][1][5] = ""
+    upload_id = _upload_workbook(client, workbook_bytes(sheets=sheets))
+    planning_run_id = _create_planning_run(upload_id)
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        promote_upload_to_canonical(upload_batch_id=upload_id, planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        component = session.scalar(select(ComponentStatus).where(ComponentStatus.planning_run_id == planning_run_id))
+        planning_run = session.get(PlanningRun, planning_run_id)
+
+    assert component is not None
+    assert planning_run is not None
+    assert component.expected_ready_date == planning_run.planning_start_date
+    assert component.ready_date_type == "CONFIRMED"
+
+
 def _upload_workbook(client: TestClient, content: bytes) -> str:
     response = client.post(
         "/api/v1/uploads",

@@ -63,7 +63,8 @@ def promote_upload_to_canonical(
     rows_by_sheet = _load_staging_payloads(upload_batch_id, db)
     valves = [_to_valve(planning_run_id, payload) for payload in rows_by_sheet["Valve_Plan"]]
     component_statuses = [
-        _to_component_status(planning_run_id, payload) for payload in rows_by_sheet["Component_Status"]
+        _to_component_status(planning_run_id, planning_run.planning_start_date, payload)
+        for payload in rows_by_sheet["Component_Status"]
     ]
     routing_operations = [
         _to_routing_operation(planning_run_id, payload) for payload in rows_by_sheet["Routing_Master"]
@@ -133,7 +134,11 @@ def _to_valve(planning_run_id: str, payload: dict[str, Any]) -> Valve:
     )
 
 
-def _to_component_status(planning_run_id: str, payload: dict[str, Any]) -> ComponentStatus:
+def _to_component_status(
+    planning_run_id: str,
+    planning_start_date: str,
+    payload: dict[str, Any],
+) -> ComponentStatus:
     fabrication_required = _required_bool(payload, "fabrication_required")
     fabrication_complete = _required_bool(payload, "fabrication_complete")
     return ComponentStatus(
@@ -145,7 +150,12 @@ def _to_component_status(planning_run_id: str, payload: dict[str, Any]) -> Compo
         qty=_required_number(payload, "qty"),
         fabrication_required=fabrication_required,
         fabrication_complete=fabrication_complete,
-        expected_ready_date=_required_text(payload, "expected_ready_date"),
+        expected_ready_date=_resolved_expected_ready_date(
+            payload=payload,
+            fabrication_required=fabrication_required,
+            fabrication_complete=fabrication_complete,
+            planning_start_date=planning_start_date,
+        ),
         critical=_required_bool(payload, "critical"),
         expected_from_fabrication=_optional_text(payload, "expected_from_fabrication"),
         priority_eligible=_optional_bool(payload, "priority_eligible"),
@@ -218,6 +228,21 @@ def _ready_date_type(payload: dict[str, Any], fabrication_required: int, fabrica
     if fabrication_complete == 1 or fabrication_required == 0:
         return "CONFIRMED"
     return "EXPECTED"
+
+
+def _resolved_expected_ready_date(
+    *,
+    payload: dict[str, Any],
+    fabrication_required: int,
+    fabrication_complete: int,
+    planning_start_date: str,
+) -> str:
+    expected_ready_date = _optional_text(payload, "expected_ready_date")
+    if expected_ready_date is not None:
+        return expected_ready_date
+    if fabrication_complete == 1 or fabrication_required == 0:
+        return planning_start_date
+    raise PromotionError("PROMOTION_DATA_ERROR", "expected_ready_date is required for not-ready components.")
 
 
 def _required_text(payload: dict[str, Any], field_name: str) -> str:

@@ -214,6 +214,46 @@ def test_upload_validation_flags_invalid_dates_numbers_and_booleans(client: Test
     assert all(issue["row_number"] == 2 for issue in issues)
 
 
+def test_upload_validation_warns_when_ready_component_missing_expected_ready_date(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"][1][3] = "N"
+    sheets["Component_Status"][1][5] = ""
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("ready-missing-date.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATED"
+    assert upload_payload["validation_error_count"] == 0
+    assert upload_payload["validation_warning_count"] == 1
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issues = issues_response.json()["issues"]
+
+    assert issues[0]["severity"] == "WARNING"
+    assert issues[0]["issue_code"] == "MISSING_EXPECTED_READY_DATE"
+
+
+def test_upload_validation_blocks_when_not_ready_component_missing_expected_ready_date(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Component_Status"][1][5] = ""
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("not-ready-missing-date.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "MISSING_EXPECTED_READY_DATE" in issue_codes
+
+
 def test_upload_validation_flags_broken_master_references(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     sheets["Component_Status"][1][0] = "V-404"
@@ -237,6 +277,27 @@ def test_upload_validation_flags_broken_master_references(client: TestClient) ->
     assert "MISSING_ROUTING" in issue_codes
     assert "UNKNOWN_MACHINE_TYPE" in issue_codes
     assert "UNKNOWN_ALT_MACHINE" in issue_codes
+
+
+def test_upload_validation_flags_valve_without_component_status_rows(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Valve_Plan"].append(["V-200", "O-200", "Beta", "2026-05-02", "2026-04-29", 0.9])
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("missing-components.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    missing_component_issues = [
+        issue for issue in issues_response.json()["issues"] if issue["issue_code"] == "MISSING_COMPONENT_STATUS"
+    ]
+
+    assert missing_component_issues
+    assert missing_component_issues[0]["sheet_name"] == "Valve_Plan"
 
 
 def test_upload_validation_generates_missing_component_line_numbers(client: TestClient) -> None:

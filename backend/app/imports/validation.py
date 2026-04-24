@@ -76,7 +76,7 @@ FIELD_RULES_BY_SHEET: dict[str, dict[str, FieldRule]] = {
         "qty": FieldRule("number", required=True, positive=True),
         "fabrication_required": FieldRule("boolean", required=True),
         "fabrication_complete": FieldRule("boolean", required=True),
-        "expected_ready_date": FieldRule("date", required=True),
+        "expected_ready_date": FieldRule("date"),
         "critical": FieldRule("boolean", required=True),
         "expected_from_fabrication": FieldRule("date"),
         "priority_eligible": FieldRule("boolean"),
@@ -158,8 +158,10 @@ def validate_import(
     _validate_required_sheets_and_columns(parsed_workbook, issue_builder)
     _validate_required_sheet_row_presence(parsed_workbook, issue_builder)
     _validate_row_values(parsed_workbook, issue_builder)
+    _validate_component_expected_ready_dates(parsed_workbook, issue_builder)
     _validate_component_line_uniqueness(parsed_workbook, issue_builder)
     _validate_canonical_unique_keys(parsed_workbook, issue_builder)
+    _validate_valves_have_component_rows(parsed_workbook, issue_builder)
     _validate_references(parsed_workbook, issue_builder)
 
     return issue_builder.issues
@@ -263,6 +265,41 @@ def _validate_required_sheet_row_presence(parsed_workbook: ParsedWorkbook, issue
                 message=f"Required sheet {sheet_name} must include at least one data row.",
                 sheet_name=sheet_name,
             )
+
+
+def _validate_component_expected_ready_dates(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    for row in parsed_workbook.rows:
+        if row.sheet_name != "Component_Status":
+            continue
+
+        if not _is_blank(row.payload.get("expected_ready_date")):
+            continue
+
+        fabrication_required = _parse_bool(row.payload.get("fabrication_required"))
+        fabrication_complete = _parse_bool(row.payload.get("fabrication_complete"))
+        if fabrication_required is None or fabrication_complete is None:
+            continue
+
+        current_ready_flag = (not fabrication_required) or fabrication_complete
+        if current_ready_flag:
+            issue_builder.add(
+                severity="WARNING",
+                issue_code="MISSING_EXPECTED_READY_DATE",
+                message="Ready component has no expected_ready_date; planning will use planning_start_date.",
+                sheet_name=row.sheet_name,
+                row_number=row.row_number,
+                field_name="expected_ready_date",
+            )
+            continue
+
+        issue_builder.add(
+            severity="BLOCKING",
+            issue_code="MISSING_EXPECTED_READY_DATE",
+            message="Not-ready component must include expected_ready_date.",
+            sheet_name=row.sheet_name,
+            row_number=row.row_number,
+            field_name="expected_ready_date",
+        )
 
 
 def _validate_row_values(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
@@ -431,6 +468,29 @@ def _validate_component_line_uniqueness(parsed_workbook: ParsedWorkbook, issue_b
                 row_number=row.row_number,
                 field_name="component_line_no",
             )
+
+
+def _validate_valves_have_component_rows(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    rows_by_sheet = _rows_by_sheet(parsed_workbook.rows)
+    component_valve_ids = {
+        _clean_text(row.payload.get("valve_id"))
+        for row in rows_by_sheet["Component_Status"]
+        if _clean_text(row.payload.get("valve_id"))
+    }
+
+    for row in rows_by_sheet["Valve_Plan"]:
+        valve_id = _clean_text(row.payload.get("valve_id"))
+        if not valve_id or valve_id in component_valve_ids:
+            continue
+
+        issue_builder.add(
+            severity="BLOCKING",
+            issue_code="MISSING_COMPONENT_STATUS",
+            message=f"Valve_ID {valve_id} has no Component_Status rows.",
+            sheet_name=row.sheet_name,
+            row_number=row.row_number,
+            field_name="valve_id",
+        )
 
 
 def _validate_canonical_unique_keys(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
