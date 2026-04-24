@@ -26,7 +26,6 @@ REQUIRED_COLUMNS_BY_SHEET: dict[str, tuple[str, ...]] = {
         "operation_no",
         "operation_name",
         "machine_type",
-        "std_total_hrs",
         "subcontract_allowed",
     ),
     "Machine_Master": (
@@ -90,7 +89,7 @@ FIELD_RULES_BY_SHEET: dict[str, dict[str, FieldRule]] = {
         "alt_machine": FieldRule("text"),
         "std_setup_hrs": FieldRule("number", nonnegative=True),
         "std_run_hrs": FieldRule("number", nonnegative=True),
-        "std_total_hrs": FieldRule("number", required=True, positive=True),
+        "std_total_hrs": FieldRule("number", nonnegative=True),
         "subcontract_allowed": FieldRule("boolean", required=True),
         "vendor_process": FieldRule("text"),
     },
@@ -158,6 +157,7 @@ def validate_import(
     _validate_required_sheets_and_columns(parsed_workbook, issue_builder)
     _validate_required_sheet_row_presence(parsed_workbook, issue_builder)
     _validate_row_values(parsed_workbook, issue_builder)
+    _validate_routing_hours(parsed_workbook, issue_builder)
     _validate_component_expected_ready_dates(parsed_workbook, issue_builder)
     _validate_component_line_uniqueness(parsed_workbook, issue_builder)
     _validate_canonical_unique_keys(parsed_workbook, issue_builder)
@@ -259,6 +259,8 @@ def _validate_required_sheet_row_presence(parsed_workbook: ParsedWorkbook, issue
 
     for sheet_name in REQUIRED_COLUMNS_BY_SHEET:
         if sheet_name in present_sheets and not rows_by_sheet[sheet_name]:
+            if sheet_name == "Routing_Master":
+                continue
             issue_builder.add(
                 severity="BLOCKING",
                 issue_code="EMPTY_SHEET",
@@ -299,6 +301,31 @@ def _validate_component_expected_ready_dates(parsed_workbook: ParsedWorkbook, is
             sheet_name=row.sheet_name,
             row_number=row.row_number,
             field_name="expected_ready_date",
+        )
+
+
+def _validate_routing_hours(parsed_workbook: ParsedWorkbook, issue_builder: _IssueBuilder) -> None:
+    for row in parsed_workbook.rows:
+        if row.sheet_name != "Routing_Master":
+            continue
+
+        std_total_hrs = _parse_number(row.payload.get("std_total_hrs"))
+        std_setup_hrs = _parse_number(row.payload.get("std_setup_hrs"))
+        std_run_hrs = _parse_number(row.payload.get("std_run_hrs"))
+
+        if std_total_hrs is not None and std_total_hrs > 0:
+            continue
+
+        if std_setup_hrs is not None and std_run_hrs is not None and (std_setup_hrs + std_run_hrs) > 0:
+            continue
+
+        issue_builder.add(
+            severity="BLOCKING",
+            issue_code="INVALID_ROUTING_HOURS",
+            message="Routing row must provide positive std_total_hrs or positive std_setup_hrs + std_run_hrs.",
+            sheet_name=row.sheet_name,
+            row_number=row.row_number,
+            field_name="std_total_hrs",
         )
 
 
@@ -605,7 +632,7 @@ def _validate_references(parsed_workbook: ParsedWorkbook, issue_builder: _IssueB
         component = _clean_text(row.payload.get("component"))
         if component and component not in routing_components:
             issue_builder.add(
-                severity="BLOCKING",
+                severity="WARNING",
                 issue_code="MISSING_ROUTING",
                 message=f"Component {component} does not exist in Routing_Master.",
                 sheet_name=row.sheet_name,

@@ -228,6 +228,8 @@ def _canonical_rows(db: Session, model: type[Any], planning_run_id: str, *order_
 
 def _ensure_required_inputs(planning_run_id: str, **collections: tuple[object, ...]) -> None:
     for collection_name, rows in collections.items():
+        if collection_name == "routing_operations":
+            continue
         if rows:
             continue
 

@@ -133,6 +133,26 @@ def test_create_planning_run_allows_warning_only_upload(client: TestClient) -> N
     assert response.json()["canonical_counts"]["vendors"] == 1
 
 
+def test_create_planning_run_allows_missing_routing_warning_only_upload(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Routing_Master"] = [sheets["Routing_Master"][0]]
+    upload_payload = _upload_workbook(client, workbook_bytes(sheets=sheets))
+
+    response = client.post(
+        "/api/v1/planning-runs",
+        json={
+            "upload_batch_id": upload_payload["id"],
+            "planning_start_date": "2026-04-21",
+            "planning_horizon_days": 7,
+        },
+    )
+
+    assert upload_payload["validation_warning_count"] == 1
+    assert upload_payload["validation_error_count"] == 0
+    assert response.status_code == 201
+    assert response.json()["canonical_counts"]["routing_operations"] == 0
+
+
 def test_create_planning_run_rejects_upload_with_blocking_validation_issues(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     del sheets["Machine_Master"]

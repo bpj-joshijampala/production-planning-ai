@@ -2,6 +2,7 @@ from sqlalchemy import CheckConstraint, ForeignKey, ForeignKeyConstraint, Index,
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.ids import new_uuid
+from app.core.time import utc_now_iso
 from app.db.base import Base
 
 
@@ -59,6 +60,182 @@ class IncomingLoadItem(Base):
     sort_sequence: Mapped[int] = mapped_column(nullable=False)
     same_day_arrival_load_days: Mapped[float | None] = mapped_column(nullable=True)
     batch_risk_flag: Mapped[int] = mapped_column(nullable=False)
+
+
+class PlannedOperation(Base):
+    __tablename__ = "planned_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["planning_run_id", "valve_id", "component_line_no"],
+            ["component_statuses.planning_run_id", "component_statuses.valve_id", "component_statuses.component_line_no"],
+            name="fk_planned_operations_run_valve_line",
+        ),
+        UniqueConstraint(
+            "planning_run_id",
+            "valve_id",
+            "component_line_no",
+            "operation_no",
+            name="uq_planned_operations_run_valve_line_operation",
+        ),
+        CheckConstraint("operation_no > 0", name="ck_planned_operations_operation_no_positive"),
+        CheckConstraint("qty > 0", name="ck_planned_operations_qty_positive"),
+        CheckConstraint("operation_hours > 0", name="ck_planned_operations_operation_hours_positive"),
+        CheckConstraint(
+            "date_confidence in ('CONFIRMED', 'EXPECTED', 'TENTATIVE')",
+            name="ck_planned_operations_date_confidence",
+        ),
+        CheckConstraint("sort_sequence > 0", name="ck_planned_operations_sort_sequence_positive"),
+        CheckConstraint(
+            "availability_offset_days >= 0",
+            name="ck_planned_operations_availability_offset_days_nonnegative",
+        ),
+        CheckConstraint(
+            "operation_arrival_offset_days is null or operation_arrival_offset_days >= 0",
+            name="ck_planned_operations_operation_arrival_offset_days_nonnegative",
+        ),
+        CheckConstraint(
+            "scheduled_start_offset_days is null or scheduled_start_offset_days >= 0",
+            name="ck_planned_operations_scheduled_start_offset_days_nonnegative",
+        ),
+        CheckConstraint(
+            "internal_wait_days is null or internal_wait_days >= 0",
+            name="ck_planned_operations_internal_wait_days_nonnegative",
+        ),
+        CheckConstraint(
+            "processing_time_days is null or processing_time_days >= 0",
+            name="ck_planned_operations_processing_time_days_nonnegative",
+        ),
+        CheckConstraint(
+            "internal_completion_days is null or internal_completion_days >= 0",
+            name="ck_planned_operations_internal_completion_days_nonnegative",
+        ),
+        CheckConstraint(
+            "internal_completion_offset_days is null or internal_completion_offset_days >= 0",
+            name="ck_planned_operations_internal_completion_offset_days_nonnegative",
+        ),
+        CheckConstraint(
+            "extreme_delay_flag is null or extreme_delay_flag in (0, 1)",
+            name="ck_planned_operations_extreme_delay_flag_bool",
+        ),
+        Index("ix_planned_operations_run_machine_type", "planning_run_id", "machine_type"),
+        Index("ix_planned_operations_run_valve", "planning_run_id", "valve_id"),
+        Index("ix_planned_operations_run_internal_completion_date", "planning_run_id", "internal_completion_date"),
+        Index("ix_planned_operations_run_sort_sequence", "planning_run_id", "sort_sequence"),
+        Index("ix_planned_operations_run_extreme_delay_flag", "planning_run_id", "extreme_delay_flag"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    valve_id: Mapped[str] = mapped_column(String, nullable=False)
+    component_line_no: Mapped[int] = mapped_column(nullable=False)
+    component: Mapped[str] = mapped_column(String, nullable=False)
+    operation_no: Mapped[int] = mapped_column(nullable=False)
+    operation_name: Mapped[str] = mapped_column(String, nullable=False)
+    machine_type: Mapped[str] = mapped_column(String, nullable=False)
+    alt_machine: Mapped[str | None] = mapped_column(String, nullable=True)
+    qty: Mapped[float] = mapped_column(nullable=False)
+    operation_hours: Mapped[float] = mapped_column(nullable=False)
+    availability_date: Mapped[str] = mapped_column(String, nullable=False)
+    date_confidence: Mapped[str] = mapped_column(String, nullable=False)
+    priority_score: Mapped[float] = mapped_column(nullable=False)
+    sort_sequence: Mapped[int] = mapped_column(nullable=False)
+    availability_offset_days: Mapped[float] = mapped_column(nullable=False)
+    operation_arrival_offset_days: Mapped[float | None] = mapped_column(nullable=True)
+    operation_arrival_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    scheduled_start_offset_days: Mapped[float | None] = mapped_column(nullable=True)
+    internal_wait_days: Mapped[float | None] = mapped_column(nullable=True)
+    processing_time_days: Mapped[float | None] = mapped_column(nullable=True)
+    internal_completion_days: Mapped[float | None] = mapped_column(nullable=True)
+    internal_completion_offset_days: Mapped[float | None] = mapped_column(nullable=True)
+    internal_completion_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    extreme_delay_flag: Mapped[int | None] = mapped_column(nullable=True)
+    recommendation_status: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class MachineLoadSummary(Base):
+    __tablename__ = "machine_load_summaries"
+    __table_args__ = (
+        UniqueConstraint("planning_run_id", "machine_type", name="uq_machine_load_summaries_run_machine_type"),
+        CheckConstraint(
+            "total_operation_hours >= 0",
+            name="ck_machine_load_summaries_total_operation_hours_nonnegative",
+        ),
+        CheckConstraint(
+            "capacity_hours_per_day >= 0",
+            name="ck_machine_load_summaries_capacity_hours_per_day_nonnegative",
+        ),
+        CheckConstraint("load_days >= 0", name="ck_machine_load_summaries_load_days_nonnegative"),
+        CheckConstraint("buffer_days >= 0", name="ck_machine_load_summaries_buffer_days_nonnegative"),
+        CheckConstraint("overload_flag in (0, 1)", name="ck_machine_load_summaries_overload_flag_bool"),
+        CheckConstraint("overload_days >= 0", name="ck_machine_load_summaries_overload_days_nonnegative"),
+        CheckConstraint(
+            "spare_capacity_days >= 0",
+            name="ck_machine_load_summaries_spare_capacity_days_nonnegative",
+        ),
+        CheckConstraint(
+            "underutilized_flag in (0, 1)",
+            name="ck_machine_load_summaries_underutilized_flag_bool",
+        ),
+        CheckConstraint("batch_risk_flag in (0, 1)", name="ck_machine_load_summaries_batch_risk_flag_bool"),
+        CheckConstraint(
+            "status in ('OK', 'OVERLOADED', 'UNDERUTILIZED', 'DATA_INCOMPLETE')",
+            name="ck_machine_load_summaries_status",
+        ),
+        Index("ix_machine_load_summaries_run_machine_type", "planning_run_id", "machine_type"),
+        Index("ix_machine_load_summaries_run_status", "planning_run_id", "status"),
+        Index("ix_machine_load_summaries_run_overload_flag", "planning_run_id", "overload_flag"),
+        Index(
+            "ix_machine_load_summaries_run_underutilized_flag",
+            "planning_run_id",
+            "underutilized_flag",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    machine_type: Mapped[str] = mapped_column(String, nullable=False)
+    total_operation_hours: Mapped[float] = mapped_column(nullable=False)
+    capacity_hours_per_day: Mapped[float] = mapped_column(nullable=False)
+    load_days: Mapped[float] = mapped_column(nullable=False)
+    buffer_days: Mapped[float] = mapped_column(nullable=False)
+    overload_flag: Mapped[int] = mapped_column(nullable=False)
+    overload_days: Mapped[float] = mapped_column(nullable=False)
+    spare_capacity_days: Mapped[float] = mapped_column(nullable=False)
+    underutilized_flag: Mapped[int] = mapped_column(nullable=False)
+    batch_risk_flag: Mapped[int] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class FlowBlocker(Base):
+    __tablename__ = "flow_blockers"
+    __table_args__ = (
+        CheckConstraint(
+            (
+                "blocker_type in ("
+                "'MISSING_COMPONENT','MISSING_ROUTING','MISSING_MACHINE','MACHINE_OVERLOAD','BATCH_RISK',"
+                "'FLOW_GAP','VALVE_FLOW_IMBALANCE','EXTREME_DELAY','VENDOR_UNAVAILABLE','VENDOR_OVERLOADED'"
+                ")"
+            ),
+            name="ck_flow_blockers_blocker_type",
+        ),
+        CheckConstraint("severity in ('INFO', 'WARNING', 'CRITICAL')", name="ck_flow_blockers_severity"),
+        Index("ix_flow_blockers_run_blocker_type", "planning_run_id", "blocker_type"),
+        Index("ix_flow_blockers_run_severity", "planning_run_id", "severity"),
+        Index("ix_flow_blockers_run_valve", "planning_run_id", "valve_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    planned_operation_id: Mapped[str | None] = mapped_column(ForeignKey("planned_operations.id"), nullable=True)
+    valve_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    component_line_no: Mapped[int | None] = mapped_column(nullable=True)
+    component: Mapped[str | None] = mapped_column(String, nullable=True)
+    operation_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    blocker_type: Mapped[str] = mapped_column(String, nullable=False)
+    cause: Mapped[str] = mapped_column(String, nullable=False)
+    recommended_action: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
 
 
 class ValveReadinessSummary(Base):

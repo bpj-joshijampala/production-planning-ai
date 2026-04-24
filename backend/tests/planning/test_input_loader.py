@@ -164,6 +164,18 @@ def test_load_planning_input_rejects_missing_planning_run(client: TestClient) ->
     assert exc_info.value.code == "PLANNING_RUN_NOT_FOUND"
 
 
+def test_load_planning_input_allows_warning_only_run_with_empty_routing_master(client: TestClient) -> None:
+    rows = minimal_workbook_rows()
+    rows["Routing_Master"] = [rows["Routing_Master"][0]]
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=rows))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        planning_input = load_planning_input(planning_run_id=planning_run_id, db=session)
+
+    assert planning_input.routing_operations == ()
+
+
 def _create_planning_run(
     client: TestClient,
     workbook_content: bytes,

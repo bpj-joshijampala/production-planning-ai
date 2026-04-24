@@ -223,6 +223,34 @@ def test_promote_defaults_ready_component_missing_expected_ready_date_to_plannin
     assert component.ready_date_type == "CONFIRMED"
 
 
+def test_promote_computes_std_total_hours_from_setup_and_run_when_missing(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Routing_Master"][0] = [
+        "Component",
+        "Operation No",
+        "Operation Name",
+        "Machine Type",
+        "Std Setup Hrs",
+        "Std Run Hrs",
+        "Subcontract Allowed",
+    ]
+    sheets["Routing_Master"][1] = ["Body", 10, "HBM roughing", "HBM", 1.5, 6.5, "Y"]
+    upload_id = _upload_workbook(client, workbook_bytes(sheets=sheets))
+    planning_run_id = _create_planning_run(upload_id)
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        promote_upload_to_canonical(upload_batch_id=upload_id, planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        routing = session.scalar(select(RoutingOperation).where(RoutingOperation.planning_run_id == planning_run_id))
+
+    assert routing is not None
+    assert routing.std_setup_hrs == pytest.approx(1.5)
+    assert routing.std_run_hrs == pytest.approx(6.5)
+    assert routing.std_total_hrs == pytest.approx(8.0)
+
+
 def _upload_workbook(client: TestClient, content: bytes) -> str:
     response = client.post(
         "/api/v1/uploads",

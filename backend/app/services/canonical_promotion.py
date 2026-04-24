@@ -166,6 +166,8 @@ def _to_component_status(
 
 
 def _to_routing_operation(planning_run_id: str, payload: dict[str, Any]) -> RoutingOperation:
+    std_setup_hrs = _optional_number(payload, "std_setup_hrs")
+    std_run_hrs = _optional_number(payload, "std_run_hrs")
     return RoutingOperation(
         id=new_uuid(),
         planning_run_id=planning_run_id,
@@ -174,9 +176,9 @@ def _to_routing_operation(planning_run_id: str, payload: dict[str, Any]) -> Rout
         operation_name=_required_text(payload, "operation_name"),
         machine_type=_required_text(payload, "machine_type"),
         alt_machine=_optional_text(payload, "alt_machine"),
-        std_setup_hrs=_optional_number(payload, "std_setup_hrs"),
-        std_run_hrs=_optional_number(payload, "std_run_hrs"),
-        std_total_hrs=_required_number(payload, "std_total_hrs"),
+        std_setup_hrs=std_setup_hrs,
+        std_run_hrs=std_run_hrs,
+        std_total_hrs=_resolved_std_total_hours(payload, std_setup_hrs, std_run_hrs),
         subcontract_allowed=_required_bool(payload, "subcontract_allowed"),
         vendor_process=_optional_text(payload, "vendor_process"),
         notes=_optional_text(payload, "notes"),
@@ -278,6 +280,26 @@ def _optional_number(payload: dict[str, Any], field_name: str) -> float | None:
         return float(str(value).strip())
     except ValueError:
         return None
+
+
+def _resolved_std_total_hours(
+    payload: dict[str, Any],
+    std_setup_hrs: float | None,
+    std_run_hrs: float | None,
+) -> float:
+    std_total_hrs = _optional_number(payload, "std_total_hrs")
+    if std_total_hrs is not None and std_total_hrs > 0:
+        return std_total_hrs
+
+    if std_setup_hrs is not None and std_run_hrs is not None:
+        total = std_setup_hrs + std_run_hrs
+        if total > 0:
+            return total
+
+    raise PromotionError(
+        "PROMOTION_DATA_ERROR",
+        "Routing row must provide positive std_total_hrs or positive std_setup_hrs + std_run_hrs.",
+    )
 
 
 def _required_int(payload: dict[str, Any], field_name: str) -> int:

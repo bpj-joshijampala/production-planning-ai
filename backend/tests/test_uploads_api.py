@@ -279,6 +279,80 @@ def test_upload_validation_flags_broken_master_references(client: TestClient) ->
     assert "UNKNOWN_ALT_MACHINE" in issue_codes
 
 
+def test_upload_validation_treats_missing_routing_as_warning_only(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Routing_Master"] = [sheets["Routing_Master"][0]]
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("missing-routing.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATED"
+    assert upload_payload["validation_error_count"] == 0
+    assert upload_payload["validation_warning_count"] == 1
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    routing_issues = [
+        issue for issue in issues_response.json()["issues"] if issue["issue_code"] == "MISSING_ROUTING"
+    ]
+
+    assert len(routing_issues) == 1
+    assert routing_issues[0]["severity"] == "WARNING"
+
+
+def test_upload_validation_allows_missing_std_total_hours_when_setup_and_run_are_present(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Routing_Master"][0] = [
+        "Component",
+        "Operation No",
+        "Operation Name",
+        "Machine Type",
+        "Std Setup Hrs",
+        "Std Run Hrs",
+        "Subcontract Allowed",
+    ]
+    sheets["Routing_Master"][1] = ["Body", 10, "HBM roughing", "HBM", 2, 6, "Y"]
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("routing-fallback.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATED"
+    assert upload_payload["validation_error_count"] == 0
+
+
+def test_upload_validation_blocks_routing_row_with_no_valid_standard_hours(client: TestClient) -> None:
+    sheets = minimal_workbook_rows()
+    sheets["Routing_Master"][0] = [
+        "Component",
+        "Operation No",
+        "Operation Name",
+        "Machine Type",
+        "Std Setup Hrs",
+        "Std Run Hrs",
+        "Std Total Hrs",
+        "Subcontract Allowed",
+    ]
+    sheets["Routing_Master"][1] = ["Body", 10, "HBM roughing", "HBM", "", "", "", "Y"]
+
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("invalid-routing-hours.xlsx", workbook_bytes(sheets=sheets), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    upload_payload = upload_response.json()
+
+    assert upload_payload["status"] == "VALIDATION_FAILED"
+
+    issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
+    issue_codes = {issue["issue_code"] for issue in issues_response.json()["issues"]}
+
+    assert "INVALID_ROUTING_HOURS" in issue_codes
+
+
 def test_upload_validation_flags_valve_without_component_status_rows(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     sheets["Valve_Plan"].append(["V-200", "O-200", "Beta", "2026-05-02", "2026-04-29", 0.9])
@@ -412,7 +486,9 @@ def test_upload_validation_rejects_required_sheets_with_no_data_rows(client: Tes
     issues_response = client.get(f"/api/v1/uploads/{upload_payload['id']}/validation-issues")
     issues = issues_response.json()["issues"]
 
-    assert {issue["sheet_name"] for issue in issues if issue["issue_code"] == "EMPTY_SHEET"} == set(REQUIRED_SHEETS)
+    assert {issue["sheet_name"] for issue in issues if issue["issue_code"] == "EMPTY_SHEET"} == (
+        set(REQUIRED_SHEETS) - {"Routing_Master"}
+    )
 
 
 def test_upload_validation_keeps_vendor_gap_as_warning(client: TestClient) -> None:
