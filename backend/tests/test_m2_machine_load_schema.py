@@ -67,18 +67,18 @@ def test_machine_load_schema_enforces_status_and_nonnegative_metrics(migrated_db
         insert_run_fixture(connection)
         connection.execute(
             """
-            insert into machine_load_summaries (
-                id, planning_run_id, machine_type, total_operation_hours, capacity_hours_per_day,
-                load_days, buffer_days, overload_flag, overload_days, spare_capacity_days,
-                underutilized_flag, batch_risk_flag, status
-            )
-            values (
-                'machine-load-1', ?, 'HBM', 16, 8,
-                2, 5, 0, 0, 3,
-                1, 1, 'UNDERUTILIZED'
-            )
-            """,
-            (RUN_ID,),
+                insert into machine_load_summaries (
+                    id, planning_run_id, machine_type, total_operation_hours, capacity_hours_per_day,
+                    load_days, buffer_days, overload_flag, overload_days, spare_capacity_days,
+                    underutilized_flag, batch_risk_flag, status, queue_approximation_warning
+                )
+                values (
+                    'machine-load-1', ?, 'HBM', 16, 8,
+                    2, 5, 0, 0, 3,
+                    1, 1, 'UNDERUTILIZED', 'Queue is priority-based and aggregated by machine type. Review before execution.'
+                )
+                """,
+                (RUN_ID,),
         )
 
         with pytest.raises(sqlite3.IntegrityError):
@@ -87,12 +87,12 @@ def test_machine_load_schema_enforces_status_and_nonnegative_metrics(migrated_db
                 insert into machine_load_summaries (
                     id, planning_run_id, machine_type, total_operation_hours, capacity_hours_per_day,
                     load_days, buffer_days, overload_flag, overload_days, spare_capacity_days,
-                    underutilized_flag, batch_risk_flag, status
+                    underutilized_flag, batch_risk_flag, status, queue_approximation_warning
                 )
                 values (
                     'machine-load-2', ?, 'VTL', 4, 8,
                     -1, 3, 0, 0, 3,
-                    1, 0, 'UNDERUTILIZED'
+                    1, 0, 'UNDERUTILIZED', 'Queue is priority-based and aggregated by machine type. Review before execution.'
                 )
                 """,
                 (RUN_ID,),
@@ -104,12 +104,12 @@ def test_machine_load_schema_enforces_status_and_nonnegative_metrics(migrated_db
                 insert into machine_load_summaries (
                     id, planning_run_id, machine_type, total_operation_hours, capacity_hours_per_day,
                     load_days, buffer_days, overload_flag, overload_days, spare_capacity_days,
-                    underutilized_flag, batch_risk_flag, status
+                    underutilized_flag, batch_risk_flag, status, queue_approximation_warning
                 )
                 values (
                     'machine-load-3', ?, 'LATHE', 0, 0,
                     0, 0, 0, 0, 0,
-                    0, 0, 'NOT_A_REAL_STATUS'
+                    0, 0, 'NOT_A_REAL_STATUS', 'Queue is priority-based and aggregated by machine type. Review before execution.'
                 )
                 """,
                 (RUN_ID,),

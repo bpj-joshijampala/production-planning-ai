@@ -2,12 +2,13 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.core.ids import new_uuid
-from app.models.output import FlowBlocker, MachineLoadSummary, PlannedOperation
+from app.models.output import FlowBlocker, MachineLoadSummary, PlannedOperation, Recommendation, VendorLoadSummary
 from app.planning.input_loader import PlanningSettingsOverride, load_planning_input
 from app.planning.priority import calculate_component_priorities
 from app.planning.queue import QueueSimulationResult, simulate_queue_and_machine_load
 from app.planning.readiness import ComponentKey, calculate_component_readiness, calculate_valve_readiness
 from app.planning.routing import expand_routing_operations
+from app.services.planning_run_metadata import upsert_planning_run_metadata
 from app.services.valve_readiness import calculate_and_persist_valve_readiness
 
 
@@ -41,6 +42,9 @@ def calculate_and_persist_machine_load(
     )
 
     try:
+        # Downstream outputs depend on the current planned-operation set.
+        db.execute(delete(Recommendation).where(Recommendation.planning_run_id == planning_run_id))
+        db.execute(delete(VendorLoadSummary).where(VendorLoadSummary.planning_run_id == planning_run_id))
         db.execute(delete(PlannedOperation).where(PlannedOperation.planning_run_id == planning_run_id))
         db.execute(
             delete(FlowBlocker).where(
@@ -125,6 +129,7 @@ def calculate_and_persist_machine_load(
                     underutilized_flag=1 if row.underutilized_flag else 0,
                     batch_risk_flag=1 if row.batch_risk_flag else 0,
                     status=row.status,
+                    queue_approximation_warning=simulation.queue_approximation_warning,
                 )
                 for row in simulation.machine_load_summaries
             ]
@@ -139,6 +144,12 @@ def calculate_and_persist_machine_load(
             ),
             commit=False,
         )
+        if settings_override is not None and commit:
+            upsert_planning_run_metadata(
+                planning_run_id,
+                db,
+                planning_settings=planning_input.settings,
+            )
         if commit:
             db.commit()
         else:

@@ -1412,8 +1412,9 @@ The data model must support these validation outcomes:
 
 - blocking errors stop planning
 - warnings allow planning
-- missing routing creates MISSING_ROUTING blocker
-- missing machine creates MISSING_MACHINE blocker
+- missing routing is stored as a warning validation issue and later as a MISSING_ROUTING blocker
+- unknown machine types create blocking validation issues
+- machine types that exist in master data but have no active capacity create runtime MISSING_MACHINE blockers
 - missing approved vendor creates VENDOR_UNAVAILABLE or NO_FEASIBLE_OPTION
 - invalid dates create validation issues
 - invalid numeric values create validation issues

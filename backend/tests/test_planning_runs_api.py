@@ -11,7 +11,7 @@ from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.main import create_app
 from app.models.canonical import Machine, Valve, Vendor
-from app.models.planning_run import PlanningRun, PlanningSnapshot
+from app.models.planning_run import MasterDataVersion, PlanningRun, PlanningSnapshot
 from app.models.upload import UploadBatch
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
 
@@ -68,6 +68,9 @@ def test_create_planning_run_promotes_canonical_data_and_stores_snapshot(client:
         upload = session.get(UploadBatch, upload_id)
         planning_run = session.get(PlanningRun, planning_run_id)
         snapshot = session.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+        master_data_version = session.scalar(
+            select(MasterDataVersion).where(MasterDataVersion.planning_run_id == planning_run_id)
+        )
         valve_count = session.scalar(select(func.count()).select_from(Valve).where(Valve.planning_run_id == planning_run_id))
         machine = session.scalar(select(Machine).where(Machine.planning_run_id == planning_run_id))
         vendor = session.scalar(select(Vendor).where(Vendor.planning_run_id == planning_run_id))
@@ -82,6 +85,10 @@ def test_create_planning_run_promotes_canonical_data_and_stores_snapshot(client:
     assert vendor is not None
     assert vendor.effective_lead_days == pytest.approx(4)
     assert snapshot is not None
+    assert master_data_version is not None
+    assert len(master_data_version.routing_version_hash) == 64
+    assert len(master_data_version.machine_version_hash) == 64
+    assert len(master_data_version.vendor_version_hash) == 64
 
     snapshot_payload = json.loads(snapshot.snapshot_json)
     assert snapshot_payload["schema_version"] == 1

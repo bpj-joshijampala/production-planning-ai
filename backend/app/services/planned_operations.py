@@ -7,6 +7,7 @@ from app.planning.input_loader import PlanningSettingsOverride, load_planning_in
 from app.planning.priority import calculate_component_priorities
 from app.planning.readiness import calculate_component_readiness, calculate_valve_readiness
 from app.planning.routing import expand_routing_operations
+from app.services.planning_run_metadata import upsert_planning_run_metadata
 
 
 def calculate_and_persist_planned_operations(
@@ -98,6 +99,12 @@ def calculate_and_persist_planned_operations(
                 for row in expansion.flow_blockers
             ]
         )
+        if settings_override is not None and commit:
+            upsert_planning_run_metadata(
+                planning_run_id,
+                db,
+                planning_settings=planning_input.settings,
+            )
         if commit:
             db.commit()
         else:

@@ -229,6 +229,8 @@ The import module must:
 - generate `component_line_no` when `Component_Line_No` is blank
 - reject duplicate `component_line_no` values within the same `Valve_ID`
 - create ImportValidationIssue records
+- keep missing routing as a warning-level import issue so planning can surface `MISSING_ROUTING` in calculated outputs
+- keep unknown machine references blocking, but allow zero-active-capacity machine types to surface as runtime `MISSING_MACHINE` blockers
 - block promotion when blocking errors exist
 
 ### 8.3 Persistence Module

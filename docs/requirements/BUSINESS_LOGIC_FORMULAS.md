@@ -1178,16 +1178,22 @@ NO_FEASIBLE_OPTION when:
 
 ```text
 if component requires machining and no routing rows exist:
-  validation severity = blocking for affected component load
-  flow blocker = MISSING_ROUTING
+  validation severity = warning
+  runtime flow blocker = MISSING_ROUTING
+  exclude component from operation load
 ```
 
 ### 28.2 Missing Machine
 
 ```text
-if Machine_Type does not exist or has no active capacity:
+if Machine_Type does not exist in Machine_Master:
   validation severity = blocking for affected operation
-  flow blocker = MISSING_MACHINE
+
+if Machine_Type exists in Machine_Master
+and machine_type_capacity_hours_per_day(Machine_Type) <= 0:
+  import validation does not block PlanningRun creation
+  runtime flow blocker = MISSING_MACHINE
+  exclude affected operation from queue and load
 ```
 
 ### 28.3 Missing Vendor

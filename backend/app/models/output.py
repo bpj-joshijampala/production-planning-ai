@@ -204,6 +204,188 @@ class MachineLoadSummary(Base):
     underutilized_flag: Mapped[int] = mapped_column(nullable=False)
     batch_risk_flag: Mapped[int] = mapped_column(nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    queue_approximation_warning: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class ThroughputSummary(Base):
+    __tablename__ = "throughput_summaries"
+    __table_args__ = (
+        UniqueConstraint("planning_run_id", name="uq_throughput_summaries_run"),
+        CheckConstraint(
+            "target_throughput_value_cr >= 0",
+            name="ck_throughput_summaries_target_throughput_value_cr_nonnegative",
+        ),
+        CheckConstraint(
+            "planned_throughput_value_cr >= 0",
+            name="ck_throughput_summaries_planned_throughput_value_cr_nonnegative",
+        ),
+        CheckConstraint("throughput_gap_cr >= 0", name="ck_throughput_summaries_throughput_gap_cr_nonnegative"),
+        CheckConstraint("throughput_risk_flag in (0, 1)", name="ck_throughput_summaries_throughput_risk_flag_bool"),
+        Index("ix_throughput_summaries_run_risk_flag", "planning_run_id", "throughput_risk_flag"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    target_throughput_value_cr: Mapped[float] = mapped_column(nullable=False)
+    planned_throughput_value_cr: Mapped[float] = mapped_column(nullable=False)
+    throughput_gap_cr: Mapped[float] = mapped_column(nullable=False)
+    throughput_risk_flag: Mapped[int] = mapped_column(nullable=False)
+
+
+class VendorLoadSummary(Base):
+    __tablename__ = "vendor_load_summaries"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["planning_run_id", "vendor_id"],
+            ["vendors.planning_run_id", "vendors.vendor_id"],
+            name="fk_vendor_load_summaries_run_vendor",
+        ),
+        UniqueConstraint(
+            "planning_run_id",
+            "vendor_id",
+            "primary_process",
+            name="uq_vendor_load_summaries_run_vendor_process",
+        ),
+        CheckConstraint(
+            "vendor_recommended_jobs >= 0",
+            name="ck_vendor_load_summaries_vendor_recommended_jobs_nonnegative",
+        ),
+        CheckConstraint(
+            "max_recommended_jobs_per_horizon > 0",
+            name="ck_vendor_load_summaries_max_recommended_jobs_positive",
+        ),
+        CheckConstraint(
+            "selected_vendor_overloaded_flag in (0, 1)",
+            name="ck_vendor_load_summaries_selected_vendor_overloaded_flag_bool",
+        ),
+        CheckConstraint(
+            "status in ('OK', 'VENDOR_OVERLOADED')",
+            name="ck_vendor_load_summaries_status",
+        ),
+        Index("ix_vendor_load_summaries_run_vendor", "planning_run_id", "vendor_id"),
+        Index("ix_vendor_load_summaries_run_status", "planning_run_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String, nullable=False)
+    vendor_name: Mapped[str] = mapped_column(String, nullable=False)
+    primary_process: Mapped[str] = mapped_column(String, nullable=False)
+    vendor_recommended_jobs: Mapped[int] = mapped_column(nullable=False)
+    max_recommended_jobs_per_horizon: Mapped[int] = mapped_column(nullable=False)
+    selected_vendor_overloaded_flag: Mapped[int] = mapped_column(nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class Recommendation(Base):
+    __tablename__ = "recommendations"
+    __table_args__ = (
+        CheckConstraint(
+            (
+                "recommendation_type in ("
+                "'OK_INTERNAL','MACHINE_OVERLOAD','USE_ALTERNATE','SUBCONTRACT',"
+                "'HOLD_FOR_PRIORITY_FLOW','EXTREME_DELAY','BATCH_SUBCONTRACT_OPPORTUNITY',"
+                "'BATCH_RISK','FLOW_BLOCKER','NO_FEASIBLE_OPTION','DATA_ERROR'"
+                ")"
+            ),
+            name="ck_recommendations_recommendation_type",
+        ),
+        CheckConstraint(
+            "internal_wait_days is null or internal_wait_days >= 0",
+            name="ck_recommendations_internal_wait_days_nonnegative",
+        ),
+        CheckConstraint(
+            "processing_time_days is null or processing_time_days >= 0",
+            name="ck_recommendations_processing_time_days_nonnegative",
+        ),
+        CheckConstraint(
+            "internal_completion_days is null or internal_completion_days >= 0",
+            name="ck_recommendations_internal_completion_days_nonnegative",
+        ),
+        CheckConstraint(
+            "vendor_total_days is null or vendor_total_days >= 0",
+            name="ck_recommendations_vendor_total_days_nonnegative",
+        ),
+        CheckConstraint(
+            "vendor_gain_days is null or vendor_gain_days >= 0",
+            name="ck_recommendations_vendor_gain_days_nonnegative",
+        ),
+        CheckConstraint(
+            "subcontract_batch_candidate_count is null or subcontract_batch_candidate_count >= 0",
+            name="ck_recommendations_subcontract_batch_candidate_count_nonnegative",
+        ),
+        CheckConstraint(
+            "batch_subcontract_opportunity_flag in (0, 1)",
+            name="ck_recommendations_batch_subcontract_opportunity_flag_bool",
+        ),
+        CheckConstraint(
+            "json_valid(reason_codes_json) and json_type(reason_codes_json) = 'array'",
+            name="ck_recommendations_reason_codes_json",
+        ),
+        CheckConstraint(
+            "status in ('PENDING', 'ACCEPTED', 'REJECTED', 'OVERRIDDEN')",
+            name="ck_recommendations_status",
+        ),
+        Index("ix_recommendations_run_type", "planning_run_id", "recommendation_type"),
+        Index("ix_recommendations_run_status", "planning_run_id", "status"),
+        Index("ix_recommendations_run_vendor", "planning_run_id", "suggested_vendor_id"),
+        Index("ix_recommendations_planned_operation", "planned_operation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    planned_operation_id: Mapped[str | None] = mapped_column(ForeignKey("planned_operations.id"), nullable=True)
+    recommendation_type: Mapped[str] = mapped_column(String, nullable=False)
+    valve_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    component_line_no: Mapped[int | None] = mapped_column(nullable=True)
+    component: Mapped[str | None] = mapped_column(String, nullable=True)
+    operation_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    machine_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    suggested_machine_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    suggested_vendor_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    suggested_vendor_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    internal_wait_days: Mapped[float | None] = mapped_column(nullable=True)
+    processing_time_days: Mapped[float | None] = mapped_column(nullable=True)
+    internal_completion_days: Mapped[float | None] = mapped_column(nullable=True)
+    vendor_total_days: Mapped[float | None] = mapped_column(nullable=True)
+    vendor_gain_days: Mapped[float | None] = mapped_column(nullable=True)
+    subcontract_batch_candidate_count: Mapped[int | None] = mapped_column(nullable=True)
+    batch_subcontract_opportunity_flag: Mapped[int] = mapped_column(nullable=False)
+    reason_codes_json: Mapped[str] = mapped_column(String, nullable=False)
+    explanation: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
+
+
+class PlannerOverride(Base):
+    __tablename__ = "planner_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "entity_type in ('RECOMMENDATION', 'OPERATION', 'VALVE', 'MACHINE', 'VENDOR')",
+            name="ck_planner_overrides_entity_type",
+        ),
+        CheckConstraint("length(trim(entity_id)) > 0", name="ck_planner_overrides_entity_id_not_blank"),
+        CheckConstraint("length(trim(override_decision)) > 0", name="ck_planner_overrides_override_decision_not_blank"),
+        CheckConstraint("length(trim(reason)) > 0", name="ck_planner_overrides_reason_not_blank"),
+        CheckConstraint("stale_flag in (0, 1)", name="ck_planner_overrides_stale_flag_bool"),
+        Index("ix_planner_overrides_run", "planning_run_id"),
+        Index("ix_planner_overrides_recommendation", "recommendation_id"),
+        Index("ix_planner_overrides_user", "user_id"),
+        Index("ix_planner_overrides_stale_flag", "stale_flag"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    recommendation_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    entity_type: Mapped[str] = mapped_column(String, nullable=False)
+    entity_id: Mapped[str] = mapped_column(String, nullable=False)
+    original_recommendation: Mapped[str | None] = mapped_column(String, nullable=True)
+    override_decision: Mapped[str] = mapped_column(String, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    remarks: Mapped[str | None] = mapped_column(String, nullable=True)
+    stale_flag: Mapped[int] = mapped_column(nullable=False, default=0)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
 
 
 class FlowBlocker(Base):

@@ -88,8 +88,10 @@ def test_calculate_and_persist_machine_load_populates_queue_fields_and_machine_s
     assert summaries[0].load_days == pytest.approx(2.0)
     assert summaries[0].underutilized_flag == 1
     assert summaries[0].batch_risk_flag == 1
+    assert "aggregated by machine type" in summaries[0].queue_approximation_warning
     assert summaries[1].total_operation_hours == pytest.approx(4.0)
     assert summaries[1].batch_risk_flag == 0
+    assert "aggregated by machine type" in summaries[1].queue_approximation_warning
     assert [row.readiness_status for row in readiness] == ["AT_RISK", "READY"]
     assert [row.valve_expected_completion_date for row in readiness] == ["2026-04-23", "2026-04-23"]
 
@@ -132,6 +134,7 @@ def test_calculate_and_persist_machine_load_creates_missing_machine_blocker_and_
     assert summary is not None
     assert summary.capacity_hours_per_day == pytest.approx(0.0)
     assert summary.status == "DATA_INCOMPLETE"
+    assert "aggregated by machine type" in summary.queue_approximation_warning
 
 
 def test_calculate_and_persist_machine_load_handles_all_routing_missing_as_blockers_instead_of_crashing(
