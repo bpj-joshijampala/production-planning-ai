@@ -210,6 +210,125 @@ def test_simulate_queue_flags_missing_machine_overload_batch_risk_and_extreme_de
     assert lathe.status == "DATA_INCOMPLETE"
 
 
+def test_simulate_queue_creates_flow_gap_blocker_when_next_operation_waits_after_previous_completion() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-010", assembly_date=date(2026, 4, 21), priority="A", value_cr=2.0),
+            _valve("V-020", assembly_date=date(2026, 4, 22), priority="A", value_cr=1.8),
+            _valve("V-030", assembly_date=date(2026, 4, 23), priority="A", value_cr=1.6),
+            _valve("V-040", assembly_date=date(2026, 4, 24), priority="A", value_cr=1.4),
+            _valve("V-100", assembly_date=date(2026, 4, 25), priority="B", value_cr=1.25),
+        ),
+        component_statuses=(
+            _component_status("V-010", 1, "Plate-1", availability_date=date(2026, 4, 21)),
+            _component_status("V-020", 1, "Plate-2", availability_date=date(2026, 4, 22)),
+            _component_status("V-030", 1, "Plate-3", availability_date=date(2026, 4, 23)),
+            _component_status("V-040", 1, "Plate-4", availability_date=date(2026, 4, 24)),
+            _component_status("V-100", 1, "Body", availability_date=date(2026, 4, 21)),
+        ),
+        routing_operations=(
+            _routing("Plate-1", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Plate-2", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Plate-3", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Plate-4", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Body", 10, machine_type="HBM", std_total_hrs=8.0),
+            _routing("Body", 20, machine_type="VTL", std_total_hrs=8.0),
+        ),
+        machines=(
+            _machine("HBM-1", "HBM", effective_hours_day=8.0, buffer_days=5.0),
+            _machine("VTL-1", "VTL", effective_hours_day=8.0, buffer_days=5.0),
+        ),
+    )
+
+    component_readiness = calculate_component_readiness(planning_input)
+    valve_readiness = calculate_valve_readiness(planning_input, component_readiness)
+    prioritized_components = calculate_component_priorities(
+        planning_input=planning_input,
+        component_readiness=component_readiness,
+        valve_readiness=valve_readiness,
+    )
+    expansion = expand_routing_operations(
+        planning_input=planning_input,
+        prioritized_components=prioritized_components,
+    )
+
+    result = simulate_queue_and_machine_load(
+        planning_input=planning_input,
+        planned_operations=expansion.planned_operations,
+        existing_flow_blockers=expansion.flow_blockers,
+    )
+
+    flow_gap_blockers = [row for row in result.flow_blockers if row.blocker_type == "FLOW_GAP"]
+
+    assert len(flow_gap_blockers) == 1
+    assert flow_gap_blockers[0].component == "Body"
+    assert flow_gap_blockers[0].operation_name == "Body op 20"
+    assert flow_gap_blockers[0].severity == "WARNING"
+    assert "3.00" in flow_gap_blockers[0].cause
+
+    body_vtl = next(
+        row for row in result.planned_operations if row.valve_id == "V-100" and row.component == "Body" and row.operation_no == 20
+    )
+    assert body_vtl.scheduled_start_offset_days == pytest.approx(4.0)
+    assert body_vtl.internal_wait_days == pytest.approx(3.0)
+
+
+def test_simulate_queue_does_not_create_flow_gap_blocker_at_exact_two_days() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-010", assembly_date=date(2026, 4, 21), priority="A", value_cr=2.0),
+            _valve("V-020", assembly_date=date(2026, 4, 22), priority="A", value_cr=1.8),
+            _valve("V-030", assembly_date=date(2026, 4, 23), priority="A", value_cr=1.6),
+            _valve("V-100", assembly_date=date(2026, 4, 25), priority="B", value_cr=1.25),
+        ),
+        component_statuses=(
+            _component_status("V-010", 1, "Plate-1", availability_date=date(2026, 4, 21)),
+            _component_status("V-020", 1, "Plate-2", availability_date=date(2026, 4, 22)),
+            _component_status("V-030", 1, "Plate-3", availability_date=date(2026, 4, 23)),
+            _component_status("V-100", 1, "Body", availability_date=date(2026, 4, 21)),
+        ),
+        routing_operations=(
+            _routing("Plate-1", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Plate-2", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Plate-3", 10, machine_type="VTL", std_total_hrs=8.0),
+            _routing("Body", 10, machine_type="HBM", std_total_hrs=8.0),
+            _routing("Body", 20, machine_type="VTL", std_total_hrs=8.0),
+        ),
+        machines=(
+            _machine("HBM-1", "HBM", effective_hours_day=8.0, buffer_days=5.0),
+            _machine("VTL-1", "VTL", effective_hours_day=8.0, buffer_days=5.0),
+        ),
+    )
+
+    component_readiness = calculate_component_readiness(planning_input)
+    valve_readiness = calculate_valve_readiness(planning_input, component_readiness)
+    prioritized_components = calculate_component_priorities(
+        planning_input=planning_input,
+        component_readiness=component_readiness,
+        valve_readiness=valve_readiness,
+    )
+    expansion = expand_routing_operations(
+        planning_input=planning_input,
+        prioritized_components=prioritized_components,
+    )
+
+    result = simulate_queue_and_machine_load(
+        planning_input=planning_input,
+        planned_operations=expansion.planned_operations,
+        existing_flow_blockers=expansion.flow_blockers,
+    )
+
+    flow_gap_blockers = [row for row in result.flow_blockers if row.blocker_type == "FLOW_GAP"]
+
+    assert flow_gap_blockers == []
+
+    body_vtl = next(
+        row for row in result.planned_operations if row.valve_id == "V-100" and row.component == "Body" and row.operation_no == 20
+    )
+    assert body_vtl.scheduled_start_offset_days == pytest.approx(3.0)
+    assert body_vtl.internal_wait_days == pytest.approx(2.0)
+
+
 def _planning_input(
     *,
     valves: tuple[ValveInput, ...],

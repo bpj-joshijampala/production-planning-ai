@@ -13,6 +13,7 @@ from app.planning.input_loader import (
 )
 from app.planning.readiness import (
     ComponentKey,
+    build_readiness_flow_blockers,
     calculate_component_readiness,
     calculate_valve_readiness,
 )
@@ -140,6 +141,67 @@ def test_calculate_valve_readiness_marks_at_risk_when_expected_completion_exceed
     assert valve_readiness[0].risk_reason == "Missing component"
 
 
+def test_calculate_valve_readiness_flags_valve_flow_imbalance_when_required_components_finish_far_apart() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-100", assembly_date=date(2026, 4, 28)),
+        ),
+        component_statuses=(
+            _component("V-100", 1, "Body", expected_ready_date=date(2026, 4, 21)),
+            _component("V-100", 2, "Bonnet", expected_ready_date=date(2026, 4, 21)),
+        ),
+        routing_operations=(
+            _routing("Body", 10),
+            _routing("Bonnet", 10),
+        ),
+    )
+
+    valve_readiness = calculate_valve_readiness(
+        planning_input,
+        calculate_component_readiness(
+            planning_input,
+            component_completion_offsets={
+                ComponentKey(valve_id="V-100", component_line_no=1): 1.0,
+                ComponentKey(valve_id="V-100", component_line_no=2): 4.5,
+            },
+        ),
+    )
+
+    assert valve_readiness[0].valve_flow_gap_days == pytest.approx(3.5)
+    assert valve_readiness[0].valve_flow_imbalance_flag is True
+    assert valve_readiness[0].valve_expected_completion_date == date(2026, 4, 26)
+
+
+def test_calculate_valve_readiness_does_not_flag_valve_flow_imbalance_at_exact_two_days() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-100", assembly_date=date(2026, 4, 28)),
+        ),
+        component_statuses=(
+            _component("V-100", 1, "Body", expected_ready_date=date(2026, 4, 21)),
+            _component("V-100", 2, "Bonnet", expected_ready_date=date(2026, 4, 21)),
+        ),
+        routing_operations=(
+            _routing("Body", 10),
+            _routing("Bonnet", 10),
+        ),
+    )
+
+    valve_readiness = calculate_valve_readiness(
+        planning_input,
+        calculate_component_readiness(
+            planning_input,
+            component_completion_offsets={
+                ComponentKey(valve_id="V-100", component_line_no=1): 1.0,
+                ComponentKey(valve_id="V-100", component_line_no=2): 3.0,
+            },
+        ),
+    )
+
+    assert valve_readiness[0].valve_flow_gap_days == pytest.approx(2.0)
+    assert valve_readiness[0].valve_flow_imbalance_flag is False
+
+
 def test_calculate_valve_readiness_falls_back_to_all_components_when_no_critical_components_exist() -> None:
     planning_input = _planning_input(
         valves=(
@@ -236,6 +298,60 @@ def test_calculate_valve_readiness_marks_valve_without_components_as_data_incomp
     assert valve_readiness[0].full_kit_flag is False
     assert valve_readiness[0].readiness_status == "DATA_INCOMPLETE"
     assert valve_readiness[0].risk_reason == "Data issue"
+
+
+def test_build_readiness_flow_blockers_creates_missing_component_with_severity_from_assembly_risk() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-100", assembly_date=date(2026, 4, 24)),
+            _valve("V-200", assembly_date=date(2026, 5, 5)),
+        ),
+        component_statuses=(
+            _component(
+                "V-100",
+                1,
+                "Body",
+                fabrication_required=True,
+                fabrication_complete=False,
+                expected_ready_date=date(2026, 4, 29),
+            ),
+            _component(
+                "V-200",
+                1,
+                "Bonnet",
+                fabrication_required=True,
+                fabrication_complete=False,
+                expected_ready_date=date(2026, 4, 30),
+            ),
+        ),
+        routing_operations=(
+            _routing("Body", 10),
+            _routing("Bonnet", 10),
+        ),
+    )
+
+    component_readiness = calculate_component_readiness(
+        planning_input,
+        component_completion_offsets={
+            ComponentKey(valve_id="V-100", component_line_no=1): 8.0,
+            ComponentKey(valve_id="V-200", component_line_no=1): 9.0,
+        },
+    )
+    valve_readiness = calculate_valve_readiness(planning_input, component_readiness)
+    blockers = build_readiness_flow_blockers(
+        planning_input=planning_input,
+        component_readiness=component_readiness,
+        valve_readiness=valve_readiness,
+    )
+
+    assert [
+        (row.blocker_type, row.valve_id, row.component, row.severity)
+        for row in blockers
+    ] == [
+        ("MISSING_COMPONENT", "V-100", "Body", "CRITICAL"),
+        ("MISSING_COMPONENT", "V-200", "Bonnet", "WARNING"),
+    ]
+    assert "availability_date 2026-04-29 is outside planning horizon ending 2026-04-28" in blockers[0].cause
 
 
 def _planning_input(

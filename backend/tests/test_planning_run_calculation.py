@@ -179,6 +179,147 @@ def test_recalculate_planning_run_is_deterministic_across_consecutive_runs(clien
     assert second_snapshot == first_snapshot
 
 
+def test_recalculate_planning_run_persists_subcontract_and_vendor_unavailable_paths(client: TestClient) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_planning_workbook_rows_with_subcontract_paths()))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        recalculate_planning_run(planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        recommendations = list(
+            session.scalars(
+                select(Recommendation)
+                .where(Recommendation.planning_run_id == planning_run_id)
+                .order_by(Recommendation.valve_id.asc(), Recommendation.operation_name.asc())
+            )
+        )
+        flow_blockers = list(
+            session.scalars(
+                select(FlowBlocker)
+                .where(FlowBlocker.planning_run_id == planning_run_id)
+                .order_by(FlowBlocker.blocker_type.asc(), FlowBlocker.operation_name.asc())
+            )
+        )
+
+    assert [
+        (row.valve_id, row.component, row.operation_name, row.recommendation_type, row.suggested_vendor_id)
+        for row in recommendations
+    ] == [
+        ("V-100", "Body", "HBM roughing", "SUBCONTRACT", "VEN-1"),
+        ("V-100", "Body", "VTL finish", "OK_INTERNAL", None),
+        ("V-200", "Bonnet", "HBM finish", "NO_FEASIBLE_OPTION", None),
+    ]
+    assert ("VENDOR_UNAVAILABLE", "V-200", "Bonnet", "HBM finish", "WARNING") in [
+        (row.blocker_type, row.valve_id, row.component, row.operation_name, row.severity)
+        for row in flow_blockers
+    ]
+
+
+def test_recalculate_planning_run_persists_batch_subcontract_opportunity_and_vendor_load(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_planning_workbook_rows_with_batch_subcontract()))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        recalculate_planning_run(planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        recommendations = list(
+            session.scalars(
+                select(Recommendation)
+                .where(Recommendation.planning_run_id == planning_run_id)
+                .order_by(Recommendation.valve_id.asc(), Recommendation.operation_name.asc())
+            )
+        )
+        planned_operations = list(
+            session.scalars(
+                select(PlannedOperation)
+                .where(PlannedOperation.planning_run_id == planning_run_id)
+                .order_by(PlannedOperation.valve_id.asc(), PlannedOperation.operation_no.asc())
+            )
+        )
+        vendor_load = list(
+            session.scalars(
+                select(VendorLoadSummary)
+                .where(VendorLoadSummary.planning_run_id == planning_run_id)
+                .order_by(VendorLoadSummary.vendor_id.asc())
+            )
+        )
+
+    assert [
+        (
+            row.valve_id,
+            row.component,
+            row.operation_name,
+            row.recommendation_type,
+            row.suggested_vendor_id,
+            row.subcontract_batch_candidate_count,
+            row.batch_subcontract_opportunity_flag,
+        )
+        for row in recommendations
+    ] == [
+        ("V-100", "Body", "HBM roughing", "BATCH_SUBCONTRACT_OPPORTUNITY", "VEN-1", 2, 1),
+        ("V-100", "Body", "VTL finish", "OK_INTERNAL", None, None, 0),
+        ("V-200", "Bonnet", "HBM finish", "BATCH_SUBCONTRACT_OPPORTUNITY", "VEN-1", 2, 1),
+    ]
+    assert [
+        (row.valve_id, row.component, row.operation_name, row.recommendation_status)
+        for row in planned_operations
+    ] == [
+        ("V-100", "Body", "HBM roughing", "SUBCONTRACT"),
+        ("V-100", "Body", "VTL finish", "OK_INTERNAL"),
+        ("V-200", "Bonnet", "HBM finish", "SUBCONTRACT"),
+    ]
+    assert [(row.vendor_id, row.vendor_recommended_jobs, row.status) for row in vendor_load] == [
+        ("VEN-1", 2, "OK"),
+    ]
+
+
+def test_recalculate_planning_run_persists_hold_for_priority_flow_and_missing_component_blockers(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_planning_workbook_rows_with_priority_hold()))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        recalculate_planning_run(planning_run_id=planning_run_id, db=session)
+
+    with session_factory() as session:
+        recommendations = list(
+            session.scalars(
+                select(Recommendation)
+                .where(Recommendation.planning_run_id == planning_run_id)
+                .order_by(Recommendation.valve_id.asc(), Recommendation.operation_name.asc())
+            )
+        )
+        blockers = list(
+            session.scalars(
+                select(FlowBlocker)
+                .where(FlowBlocker.planning_run_id == planning_run_id)
+                .order_by(FlowBlocker.blocker_type.asc(), FlowBlocker.component_line_no.asc())
+            )
+        )
+
+    assert [
+        (row.valve_id, row.component, row.operation_name, row.recommendation_type)
+        for row in recommendations
+    ] == [
+        ("V-100", "Body", "HBM roughing", "OK_INTERNAL"),
+        ("V-300", "Seat", "HBM finish", "HOLD_FOR_PRIORITY_FLOW"),
+    ]
+    assert [
+        (row.blocker_type, row.valve_id, row.component, row.severity)
+        for row in blockers
+        if row.blocker_type == "MISSING_COMPONENT"
+    ] == [
+        ("MISSING_COMPONENT", "V-300", "Bonnet", "WARNING"),
+        ("MISSING_COMPONENT", "V-300", "Stem", "WARNING"),
+        ("MISSING_COMPONENT", "V-300", "Gate", "WARNING"),
+    ]
+
+
 def test_recalculate_planning_run_preserves_overrides_and_marks_missing_operation_targets_stale(
     client: TestClient,
 ) -> None:
@@ -429,6 +570,152 @@ def _planning_workbook_rows() -> dict[str, list[list[object]]]:
     ]
     rows["Machine_Master"][1] = ["HBM-1", "HBM", 8, 100, 5, "Y"]
     rows["Machine_Master"].append(["VTL-1", "VTL", 8, 100, 3, "Y"])
+
+    return rows
+
+
+def _planning_workbook_rows_with_subcontract_paths() -> dict[str, list[list[object]]]:
+    rows = deepcopy(minimal_workbook_rows())
+
+    rows["Valve_Plan"][0] = [
+        "Valve_ID",
+        "Order_ID",
+        "Customer",
+        "Dispatch_Date",
+        "Assembly_Date",
+        "Value_Cr",
+        "Priority",
+    ]
+    rows["Valve_Plan"][1] = ["V-100", "O-100", "Acme", "2026-05-01", "2026-04-22", 1.25, "A"]
+    rows["Valve_Plan"].append(["V-200", "O-200", "Beta", "2026-05-02", "2026-04-24", 0.5, "B"])
+
+    rows["Component_Status"][0] = [
+        "Valve_ID",
+        "Component_Line_No",
+        "Component",
+        "Qty",
+        "Fabrication_Required",
+        "Fabrication_Complete",
+        "Expected_Ready_Date",
+        "Critical",
+        "Ready_Date_Type",
+    ]
+    rows["Component_Status"][1] = ["V-100", 1, "Body", 1, "N", "Y", "2026-04-21", "Y", "CONFIRMED"]
+    rows["Component_Status"].append(["V-200", 1, "Bonnet", 1, "N", "Y", "2026-04-21", "Y", "CONFIRMED"])
+
+    rows["Routing_Master"][0] = [
+        "Component",
+        "Operation_No",
+        "Operation_Name",
+        "Machine_Type",
+        "Std_Total_Hrs",
+        "Subcontract_Allowed",
+        "Vendor_Process",
+    ]
+    rows["Routing_Master"][1] = ["Body", 10, "HBM roughing", "HBM", 8, "Y", ""]
+    rows["Routing_Master"].append(["Body", 20, "VTL finish", "VTL", 4, "N", ""])
+    rows["Routing_Master"].append(["Bonnet", 10, "HBM finish", "HBM", 8, "Y", "EDM"])
+
+    rows["Machine_Master"][0] = [
+        "Machine_ID",
+        "Machine_Type",
+        "Hours_per_Day",
+        "Efficiency_Percent",
+        "Buffer_Days",
+        "Active",
+    ]
+    rows["Machine_Master"][1] = ["HBM-1", "HBM", 8, 100, 1, "Y"]
+    rows["Machine_Master"].append(["VTL-1", "VTL", 8, 100, 3, "Y"])
+
+    rows["Vendor_Master"][0] = [
+        "Vendor_ID",
+        "Vendor_Name",
+        "Primary_Process",
+        "Turnaround_Days",
+        "Transport_Days_Total",
+        "Capacity_Rating",
+        "Reliability",
+        "Approved",
+    ]
+    rows["Vendor_Master"][1] = ["VEN-1", "Vendor One", "HBM", 0, 0, "Medium", "A", "Y"]
+
+    return rows
+
+
+def _planning_workbook_rows_with_batch_subcontract() -> dict[str, list[list[object]]]:
+    rows = _planning_workbook_rows_with_subcontract_paths()
+    rows["Routing_Master"][3] = ["Bonnet", 10, "HBM finish", "HBM", 8, "Y", "HBM"]
+    return rows
+
+
+def _planning_workbook_rows_with_priority_hold() -> dict[str, list[list[object]]]:
+    rows = deepcopy(minimal_workbook_rows())
+
+    rows["Valve_Plan"][0] = [
+        "Valve_ID",
+        "Order_ID",
+        "Customer",
+        "Dispatch_Date",
+        "Assembly_Date",
+        "Value_Cr",
+        "Priority",
+    ]
+    rows["Valve_Plan"][1] = ["V-100", "O-100", "Acme", "2026-05-01", "2026-04-22", 1.25, "A"]
+    rows["Valve_Plan"].append(["V-300", "O-300", "Gamma", "2026-05-03", "2026-04-28", 0.4, "C"])
+
+    rows["Component_Status"][0] = [
+        "Valve_ID",
+        "Component_Line_No",
+        "Component",
+        "Qty",
+        "Fabrication_Required",
+        "Fabrication_Complete",
+        "Expected_Ready_Date",
+        "Critical",
+        "Ready_Date_Type",
+    ]
+    rows["Component_Status"][1] = ["V-100", 1, "Body", 1, "N", "Y", "2026-04-21", "Y", "CONFIRMED"]
+    rows["Component_Status"].append(["V-300", 1, "Seat", 1, "N", "Y", "2026-04-22", "Y", "CONFIRMED"])
+    rows["Component_Status"].append(["V-300", 2, "Bonnet", 1, "Y", "N", "2026-05-02", "Y", "EXPECTED"])
+    rows["Component_Status"].append(["V-300", 3, "Stem", 1, "Y", "N", "2026-05-03", "Y", "EXPECTED"])
+    rows["Component_Status"].append(["V-300", 4, "Gate", 1, "Y", "N", "2026-05-04", "Y", "EXPECTED"])
+
+    rows["Routing_Master"][0] = [
+        "Component",
+        "Operation_No",
+        "Operation_Name",
+        "Machine_Type",
+        "Std_Total_Hrs",
+        "Subcontract_Allowed",
+        "Vendor_Process",
+    ]
+    rows["Routing_Master"][1] = ["Body", 10, "HBM roughing", "HBM", 8, "N", ""]
+    rows["Routing_Master"].append(["Seat", 10, "HBM finish", "HBM", 8, "N", ""])
+    rows["Routing_Master"].append(["Bonnet", 10, "HBM prep", "HBM", 4, "N", ""])
+    rows["Routing_Master"].append(["Stem", 10, "HBM turn", "HBM", 4, "N", ""])
+    rows["Routing_Master"].append(["Gate", 10, "HBM mill", "HBM", 4, "N", ""])
+
+    rows["Machine_Master"][0] = [
+        "Machine_ID",
+        "Machine_Type",
+        "Hours_per_Day",
+        "Efficiency_Percent",
+        "Buffer_Days",
+        "Active",
+    ]
+    rows["Machine_Master"][1] = ["HBM-1", "HBM", 8, 100, 2.5, "Y"]
+
+    rows["Vendor_Master"][0] = [
+        "Vendor_ID",
+        "Vendor_Name",
+        "Primary_Process",
+        "Turnaround_Days",
+        "Transport_Days_Total",
+        "Capacity_Rating",
+        "Reliability",
+        "Approved",
+    ]
+    rows["Vendor_Master"][1] = ["VEN-1", "Vendor One", "HBM", 1, 0, "Medium", "A", "Y"]
 
     return rows
 

@@ -2,9 +2,15 @@ from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from app.core.ids import new_uuid
-from app.models.output import ValveReadinessSummary
+from app.models.output import FlowBlocker, ValveReadinessSummary
 from app.planning.input_loader import PlanningSettingsOverride, load_planning_input
-from app.planning.readiness import ComponentKey, calculate_component_readiness, calculate_valve_readiness
+from app.planning.readiness import (
+    ComponentKey,
+    ReadinessFlowBlockerData,
+    build_readiness_flow_blockers,
+    calculate_component_readiness,
+    calculate_valve_readiness,
+)
 from app.services.planning_run_metadata import upsert_planning_run_metadata
 
 
@@ -26,10 +32,21 @@ def calculate_and_persist_valve_readiness(
         component_completion_offsets=component_completion_offsets,
     )
     valve_readiness = calculate_valve_readiness(planning_input, component_readiness)
+    readiness_flow_blockers = build_readiness_flow_blockers(
+        planning_input=planning_input,
+        component_readiness=component_readiness,
+        valve_readiness=valve_readiness,
+    )
 
     try:
         db.execute(
             delete(ValveReadinessSummary).where(ValveReadinessSummary.planning_run_id == planning_run_id)
+        )
+        db.execute(
+            delete(FlowBlocker).where(
+                FlowBlocker.planning_run_id == planning_run_id,
+                FlowBlocker.blocker_type.in_(("MISSING_COMPONENT", "VALVE_FLOW_IMBALANCE")),
+            )
         )
         db.add_all(
             [
@@ -62,6 +79,12 @@ def calculate_and_persist_valve_readiness(
                 for row in valve_readiness
             ]
         )
+        db.add_all(
+            _persisted_readiness_flow_blockers(
+                planning_run_id=planning_run_id,
+                flow_blockers=readiness_flow_blockers,
+            )
+        )
         if settings_override is not None and commit:
             upsert_planning_run_metadata(
                 planning_run_id,
@@ -77,3 +100,26 @@ def calculate_and_persist_valve_readiness(
         raise
 
     return valve_readiness
+
+
+def _persisted_readiness_flow_blockers(
+    *,
+    planning_run_id: str,
+    flow_blockers: tuple[ReadinessFlowBlockerData, ...],
+) -> list[FlowBlocker]:
+    return [
+        FlowBlocker(
+            id=new_uuid(),
+            planning_run_id=planning_run_id,
+            planned_operation_id=None,
+            valve_id=row.valve_id,
+            component_line_no=row.component_line_no,
+            component=row.component,
+            operation_name=None,
+            blocker_type=row.blocker_type,
+            cause=row.cause,
+            recommended_action=row.recommended_action,
+            severity=row.severity,
+        )
+        for row in flow_blockers
+    ]

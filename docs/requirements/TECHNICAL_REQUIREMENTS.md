@@ -1170,9 +1170,13 @@ Required fields:
 - planning_run_id
 - entity_type
 - entity_id
-- original_recommendation
 - override_decision
 - reason
+
+Notes:
+
+- `original_recommendation` may be omitted in the request for non-recommendation targets
+- for `entity_type = RECOMMENDATION`, the backend must record the current recommendation type even if the caller omits or sends a different value
 
 ```text
 GET /api/v1/planning-runs/{planning_run_id}/planner-overrides

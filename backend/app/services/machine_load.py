@@ -6,8 +6,13 @@ from app.models.output import FlowBlocker, MachineLoadSummary, PlannedOperation,
 from app.planning.input_loader import PlanningSettingsOverride, load_planning_input
 from app.planning.priority import calculate_component_priorities
 from app.planning.queue import QueueSimulationResult, simulate_queue_and_machine_load
-from app.planning.readiness import ComponentKey, calculate_component_readiness, calculate_valve_readiness
-from app.planning.routing import expand_routing_operations
+from app.planning.readiness import (
+    ComponentKey,
+    build_readiness_flow_blockers,
+    calculate_component_readiness,
+    calculate_valve_readiness,
+)
+from app.planning.routing import FlowBlockerData, expand_routing_operations
 from app.services.planning_run_metadata import upsert_planning_run_metadata
 from app.services.valve_readiness import calculate_and_persist_valve_readiness
 
@@ -42,18 +47,31 @@ def calculate_and_persist_machine_load(
     )
 
     try:
+        combined_flow_blockers = tuple(simulation.flow_blockers)
+
         # Downstream outputs depend on the current planned-operation set.
         db.execute(delete(Recommendation).where(Recommendation.planning_run_id == planning_run_id))
         db.execute(delete(VendorLoadSummary).where(VendorLoadSummary.planning_run_id == planning_run_id))
-        db.execute(delete(PlannedOperation).where(PlannedOperation.planning_run_id == planning_run_id))
         db.execute(
             delete(FlowBlocker).where(
                 FlowBlocker.planning_run_id == planning_run_id,
                 FlowBlocker.blocker_type.in_(
-                    ("MISSING_ROUTING", "MISSING_MACHINE", "MACHINE_OVERLOAD", "BATCH_RISK", "EXTREME_DELAY")
+                    (
+                        "MISSING_ROUTING",
+                        "MISSING_COMPONENT",
+                        "MISSING_MACHINE",
+                        "MACHINE_OVERLOAD",
+                        "BATCH_RISK",
+                        "FLOW_GAP",
+                        "VALVE_FLOW_IMBALANCE",
+                        "EXTREME_DELAY",
+                        "VENDOR_UNAVAILABLE",
+                        "VENDOR_OVERLOADED",
+                    )
                 ),
             )
         )
+        db.execute(delete(PlannedOperation).where(PlannedOperation.planning_run_id == planning_run_id))
         db.execute(delete(MachineLoadSummary).where(MachineLoadSummary.planning_run_id == planning_run_id))
 
         db.add_all(
@@ -97,24 +115,6 @@ def calculate_and_persist_machine_load(
         )
         db.add_all(
             [
-                FlowBlocker(
-                    id=new_uuid(),
-                    planning_run_id=planning_run_id,
-                    planned_operation_id=row.planned_operation_id,
-                    valve_id=row.valve_id,
-                    component_line_no=row.component_line_no,
-                    component=row.component,
-                    operation_name=row.operation_name,
-                    blocker_type=row.blocker_type,
-                    cause=row.cause,
-                    recommended_action=row.recommended_action,
-                    severity=row.severity,
-                )
-                for row in simulation.flow_blockers
-            ]
-        )
-        db.add_all(
-            [
                 MachineLoadSummary(
                     id=new_uuid(),
                     planning_run_id=planning_run_id,
@@ -134,7 +134,25 @@ def calculate_and_persist_machine_load(
                 for row in simulation.machine_load_summaries
             ]
         )
-        calculate_and_persist_valve_readiness(
+        db.add_all(
+            [
+                FlowBlocker(
+                    id=new_uuid(),
+                    planning_run_id=planning_run_id,
+                    planned_operation_id=row.planned_operation_id,
+                    valve_id=row.valve_id,
+                    component_line_no=row.component_line_no,
+                    component=row.component,
+                    operation_name=row.operation_name,
+                    blocker_type=row.blocker_type,
+                    cause=row.cause,
+                    recommended_action=row.recommended_action,
+                    severity=row.severity,
+                )
+                for row in simulation.flow_blockers
+            ]
+        )
+        valve_readiness = calculate_and_persist_valve_readiness(
             planning_run_id=planning_run_id,
             db=db,
             settings_override=settings_override,
@@ -143,6 +161,24 @@ def calculate_and_persist_machine_load(
                 simulation=simulation,
             ),
             commit=False,
+        )
+        combined_flow_blockers = combined_flow_blockers + tuple(
+            FlowBlockerData(
+                planned_operation_id=None,
+                valve_id=row.valve_id,
+                component_line_no=row.component_line_no,
+                component=row.component,
+                operation_name=None,
+                blocker_type=row.blocker_type,
+                cause=row.cause,
+                recommended_action=row.recommended_action,
+                severity=row.severity,
+            )
+            for row in build_readiness_flow_blockers(
+                planning_input=planning_input,
+                component_readiness=component_readiness,
+                valve_readiness=valve_readiness,
+            )
         )
         if settings_override is not None and commit:
             upsert_planning_run_metadata(
@@ -158,7 +194,12 @@ def calculate_and_persist_machine_load(
         db.rollback()
         raise
 
-    return simulation
+    return QueueSimulationResult(
+        planned_operations=simulation.planned_operations,
+        machine_load_summaries=simulation.machine_load_summaries,
+        flow_blockers=combined_flow_blockers,
+        queue_approximation_warning=simulation.queue_approximation_warning,
+    )
 
 
 def _component_completion_offsets(

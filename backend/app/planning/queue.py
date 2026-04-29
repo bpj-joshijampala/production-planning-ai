@@ -1,12 +1,13 @@
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from math import ceil
 
 from app.planning.input_loader import PlanningInput
 from app.planning.routing import FlowBlockerData, PlannedOperationData
+from app.planning.same_day_arrival import calculate_same_day_arrival_load_days
 
 MACHINE_TYPE_QUEUE_LIMITATION_WARNING = "Queue is priority-based and aggregated by machine type. Review before execution."
+FLOW_GAP_LIMIT_DAYS = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,7 @@ def simulate_queue_and_machine_load(
     for row in routed_operations:
         machine_capacity = capacity_by_machine_type.get(row.machine_type)
         component_key = (row.valve_id, row.component_line_no)
+        has_previous_operation = component_key in previous_completion_by_component
         previous_completion_offset = previous_completion_by_component.get(component_key, row.availability_offset_days)
 
         if machine_capacity is None or machine_capacity.capacity_hours_per_day <= 0:
@@ -155,6 +157,28 @@ def simulate_queue_and_machine_load(
         processing_time_days = row.operation_hours / machine_capacity.capacity_hours_per_day
         internal_completion_days = internal_wait_days + processing_time_days
         internal_completion_offset_days = operation_arrival_offset_days + internal_completion_days
+        flow_gap_days = (
+            None
+            if not has_previous_operation
+            else max(0.0, scheduled_start_offset_days - previous_completion_offset)
+        )
+        if flow_gap_days is not None and flow_gap_days > FLOW_GAP_LIMIT_DAYS:
+            flow_blockers.append(
+                FlowBlockerData(
+                    planned_operation_id=None,
+                    valve_id=row.valve_id,
+                    component_line_no=row.component_line_no,
+                    component=row.component,
+                    operation_name=row.operation_name,
+                    blocker_type="FLOW_GAP",
+                    cause=(
+                        f"Operation flow gap {flow_gap_days:.2f} days exceeds limit {FLOW_GAP_LIMIT_DAYS:.2f} "
+                        f"before {row.operation_name}."
+                    ),
+                    recommended_action="Review downstream queue and rebalance the next operation to preserve flow continuity.",
+                    severity="WARNING",
+                )
+            )
         extreme_delay_flag = internal_wait_days > (2 * machine_capacity.buffer_days)
         if extreme_delay_flag:
             flow_blockers.append(
@@ -239,6 +263,8 @@ class _MachineCapacity:
 
 
 def _capacity_by_machine_type(planning_input: PlanningInput) -> dict[str, _MachineCapacity]:
+    from collections import defaultdict
+
     capacities: dict[str, float] = defaultdict(float)
     buffers: dict[str, list[float]] = defaultdict(list)
 
@@ -262,19 +288,17 @@ def _same_day_arrival_load_days(
     planned_operations: tuple[PlannedOperationData, ...],
     capacity_by_machine_type: dict[str, _MachineCapacity],
 ) -> dict[tuple[str, str], float]:
-    same_day_arrival_hours: dict[tuple[str, str], float] = defaultdict(float)
-    for row in planned_operations:
-        if row.operation_arrival_date is None:
-            continue
-        machine_capacity = capacity_by_machine_type.get(row.machine_type)
-        if machine_capacity is None or machine_capacity.capacity_hours_per_day <= 0:
-            continue
-        same_day_arrival_hours[(row.operation_arrival_date.isoformat(), row.machine_type)] += row.operation_hours
-
-    return {
-        key: hours / capacity_by_machine_type[key[1]].capacity_hours_per_day
-        for key, hours in same_day_arrival_hours.items()
-    }
+    return calculate_same_day_arrival_load_days(
+        arrivals=tuple(
+            (row.operation_arrival_date, row.machine_type, row.operation_hours)
+            for row in planned_operations
+            if row.operation_arrival_date is not None
+        ),
+        capacity_hours_per_day_by_machine={
+            machine_type: machine_capacity.capacity_hours_per_day
+            for machine_type, machine_capacity in capacity_by_machine_type.items()
+        },
+    )
 
 
 def _machine_load_summaries(

@@ -10,7 +10,7 @@ from sqlalchemy import select
 from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.main import create_app
-from app.models.output import ValveReadinessSummary
+from app.models.output import FlowBlocker, ValveReadinessSummary
 from app.planning.readiness import ComponentKey
 from app.services.valve_readiness import calculate_and_persist_valve_readiness
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
@@ -104,6 +104,95 @@ def test_calculate_and_persist_valve_readiness_defaults_routed_components_to_dat
         )
 
     assert persisted_statuses == ["DATA_INCOMPLETE", "DATA_INCOMPLETE"]
+
+
+def test_calculate_and_persist_valve_readiness_persists_and_refreshes_valve_flow_imbalance_blockers(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_readiness_workbook_rows()))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        calculate_and_persist_valve_readiness(
+            planning_run_id=planning_run_id,
+            db=session,
+            component_completion_offsets={
+                ComponentKey(valve_id="V-100", component_line_no=1): 8.0,
+                ComponentKey(valve_id="V-050", component_line_no=1): 1.0,
+                ComponentKey(valve_id="V-050", component_line_no=2): 4.0,
+            },
+        )
+
+    with session_factory() as session:
+        blockers = list(
+            session.scalars(
+                select(FlowBlocker)
+                .where(FlowBlocker.planning_run_id == planning_run_id)
+                .where(FlowBlocker.blocker_type == "VALVE_FLOW_IMBALANCE")
+                .order_by(FlowBlocker.valve_id.asc())
+            )
+        )
+
+    assert len(blockers) == 1
+    assert blockers[0].valve_id == "V-050"
+    assert blockers[0].severity == "WARNING"
+    assert "3.00" in blockers[0].cause
+
+    with session_factory() as session:
+        calculate_and_persist_valve_readiness(
+            planning_run_id=planning_run_id,
+            db=session,
+            component_completion_offsets={
+                ComponentKey(valve_id="V-100", component_line_no=1): 8.0,
+                ComponentKey(valve_id="V-050", component_line_no=1): 1.0,
+                ComponentKey(valve_id="V-050", component_line_no=2): 3.0,
+            },
+        )
+
+    with session_factory() as session:
+        blockers = list(
+            session.scalars(
+                select(FlowBlocker)
+                .where(FlowBlocker.planning_run_id == planning_run_id)
+                .where(FlowBlocker.blocker_type == "VALVE_FLOW_IMBALANCE")
+            )
+        )
+
+    assert blockers == []
+
+
+def test_calculate_and_persist_valve_readiness_persists_missing_component_blockers_with_severity(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_readiness_workbook_rows()))
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        calculate_and_persist_valve_readiness(
+            planning_run_id=planning_run_id,
+            db=session,
+            component_completion_offsets={
+                ComponentKey(valve_id="V-100", component_line_no=1): 8.0,
+                ComponentKey(valve_id="V-050", component_line_no=1): 1.0,
+                ComponentKey(valve_id="V-050", component_line_no=2): 3.0,
+            },
+        )
+
+    with session_factory() as session:
+        blockers = list(
+            session.scalars(
+                select(FlowBlocker)
+                .where(FlowBlocker.planning_run_id == planning_run_id)
+                .where(FlowBlocker.blocker_type == "MISSING_COMPONENT")
+                .order_by(FlowBlocker.valve_id.asc(), FlowBlocker.component_line_no.asc())
+            )
+        )
+
+    assert [(row.valve_id, row.component, row.severity) for row in blockers] == [
+        ("V-100", "Body", "CRITICAL"),
+    ]
+    assert "availability_date 2026-04-29 is outside planning horizon ending 2026-04-28" in blockers[0].cause
+    assert blockers[0].recommended_action == "Expedite component readiness, update the expected date, or replan assembly before release."
 
 
 def _create_planning_run(client: TestClient, workbook_content: bytes) -> str:

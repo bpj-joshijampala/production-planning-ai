@@ -1,0 +1,28 @@
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.schemas.planner_override import (
+    PlannerOverrideCreateRequest,
+    PlannerOverrideListResponse,
+    PlannerOverrideResponse,
+)
+from app.services.planner_overrides import create_planner_override, list_planner_overrides
+
+router = APIRouter(tags=["planner-overrides"])
+
+
+@router.post("/planner-overrides", response_model=PlannerOverrideResponse, status_code=status.HTTP_201_CREATED)
+def create_planner_override_endpoint(
+    request: PlannerOverrideCreateRequest,
+    db: Session = Depends(get_db),
+) -> PlannerOverrideResponse:
+    return create_planner_override(request=request, db=db)
+
+
+@router.get("/planning-runs/{planning_run_id}/planner-overrides", response_model=PlannerOverrideListResponse)
+def list_planner_overrides_endpoint(
+    planning_run_id: str,
+    db: Session = Depends(get_db),
+) -> PlannerOverrideListResponse:
+    return list_planner_overrides(planning_run_id=planning_run_id, db=db)

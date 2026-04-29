@@ -362,7 +362,7 @@ User stories:
 | Story ID | User Story | Acceptance Criteria |
 |---|---|---|
 | M3-E3-US1 | As a planner, I can see vendor recommendations when internal completion is worse. | SUBCONTRACT recommendation requires approved vendor and vendor completion earlier than internal completion. |
-| M3-E3-US2 | As a planner, I can see suggested vendor. | Vendor selection sorts by lead time, reliability, capacity rating, and vendor name. |
+| M3-E3-US2 | As a planner, I can see suggested vendor. | Vendor selection sorts by lead time, reliability, capacity rating, and vendor ID. |
 | M3-E3-US3 | As a planner, I can see vendor gain. | Recommendation includes internal wait, internal completion, vendor total days, and vendor gain days. |
 | M3-E3-US4 | As a planner, I am warned about vendor model limits. | API/UI can display that external pending load and vendor timing are only partially modeled. |
 

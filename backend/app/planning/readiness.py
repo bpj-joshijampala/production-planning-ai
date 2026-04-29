@@ -5,6 +5,8 @@ from math import ceil
 
 from app.planning.input_loader import ComponentStatusInput, PlanningInput
 
+VALVE_FLOW_IMBALANCE_LIMIT_DAYS = 2.0
+
 
 @dataclass(frozen=True, slots=True)
 class ComponentKey:
@@ -48,6 +50,17 @@ class ValveReadinessSummaryData:
     risk_reason: str | None
     valve_flow_gap_days: float | None
     valve_flow_imbalance_flag: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessFlowBlockerData:
+    valve_id: str
+    component_line_no: int | None
+    component: str | None
+    blocker_type: str
+    cause: str
+    recommended_action: str
+    severity: str
 
 
 def calculate_component_readiness(
@@ -147,6 +160,10 @@ def calculate_valve_readiness(
             if valve_expected_completion_offset_days is None
             else planning_input.settings.planning_start_date + timedelta(days=ceil(valve_expected_completion_offset_days))
         )
+        valve_flow_gap_days = _valve_flow_gap_days(completion_offsets)
+        valve_flow_imbalance_flag = (
+            valve_flow_gap_days is not None and valve_flow_gap_days > VALVE_FLOW_IMBALANCE_LIMIT_DAYS
+        )
         otd_delay_days = (
             0.0
             if valve_expected_completion_date is None
@@ -189,12 +206,68 @@ def calculate_valve_readiness(
                     pending_required_count=pending_required_count,
                     otd_risk_flag=otd_risk_flag,
                 ),
-                valve_flow_gap_days=None,
-                valve_flow_imbalance_flag=False,
+                valve_flow_gap_days=valve_flow_gap_days,
+                valve_flow_imbalance_flag=valve_flow_imbalance_flag,
             )
         )
 
     return tuple(results)
+
+
+def build_readiness_flow_blockers(
+    *,
+    planning_input: PlanningInput,
+    component_readiness: tuple[ComponentReadiness, ...],
+    valve_readiness: tuple[ValveReadinessSummaryData, ...],
+) -> tuple[ReadinessFlowBlockerData, ...]:
+    valve_readiness_by_id = {row.valve_id: row for row in valve_readiness}
+    blockers: list[ReadinessFlowBlockerData] = []
+
+    for row in component_readiness:
+        if row.current_ready_flag or row.in_horizon_flag or not row.required_for_assembly_flag:
+            continue
+
+        valve_summary = valve_readiness_by_id.get(row.valve_id)
+        blockers.append(
+            ReadinessFlowBlockerData(
+                valve_id=row.valve_id,
+                component_line_no=row.component_line_no,
+                component=row.component,
+                blocker_type="MISSING_COMPONENT",
+                cause=(
+                    f"Required component {row.component} availability_date {row.availability_date.isoformat()} "
+                    f"is outside planning horizon ending {planning_input.settings.planning_end_date.isoformat()}."
+                ),
+                recommended_action=(
+                    "Expedite component readiness, update the expected date, or replan assembly before release."
+                ),
+                severity=(
+                    "CRITICAL"
+                    if valve_summary is not None and valve_summary.otd_risk_flag
+                    else "WARNING"
+                ),
+            )
+        )
+
+    for row in valve_readiness:
+        if not row.valve_flow_imbalance_flag or row.valve_flow_gap_days is None:
+            continue
+        blockers.append(
+            ReadinessFlowBlockerData(
+                valve_id=row.valve_id,
+                component_line_no=None,
+                component=None,
+                blocker_type="VALVE_FLOW_IMBALANCE",
+                cause=(
+                    f"Valve {row.valve_id} required-component completion gap {row.valve_flow_gap_days:.2f} days "
+                    f"exceeds limit {VALVE_FLOW_IMBALANCE_LIMIT_DAYS:.2f}."
+                ),
+                recommended_action="Align component completion timing before assembly and rebalance priority flow.",
+                severity="WARNING",
+            )
+        )
+
+    return tuple(blockers)
 
 
 def _required_component_keys_by_valve(
@@ -236,6 +309,15 @@ def _component_completion_offset_days(
     if has_routing:
         return None
     return availability_offset_days
+
+
+def _valve_flow_gap_days(completion_offsets: list[float | None]) -> float | None:
+    if any(offset is None for offset in completion_offsets):
+        return None
+    numeric_offsets = [offset for offset in completion_offsets if offset is not None]
+    if not numeric_offsets:
+        return None
+    return max(numeric_offsets) - min(numeric_offsets)
 
 
 def _readiness_status(
