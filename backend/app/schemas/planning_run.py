@@ -30,3 +30,10 @@ class PlanningRunResponse(BaseModel):
     error_message: str | None
     snapshot_id: str
     canonical_counts: CanonicalCountsResponse
+
+
+class PlanningRunListResponse(BaseModel):
+    items: list[PlanningRunResponse]
+    total: int
+    page: int
+    page_size: int

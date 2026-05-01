@@ -6,12 +6,17 @@ from sqlalchemy.orm import Session
 
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
-from app.models.canonical import Valve, Vendor
+from app.models.canonical import ComponentStatus, Machine, RoutingOperation, Valve, Vendor
 from app.models.output import MachineLoadSummary, PlannerOverride, PlannedOperation, Recommendation
 from app.models.planning_run import PlanningRun, PlanningSnapshot
 from app.models.upload import ImportValidationIssue, UploadBatch
 from app.planning.input_loader import PlanningSettingsOverride, build_planning_settings
-from app.schemas.planning_run import CanonicalCountsResponse, PlanningRunCreateRequest, PlanningRunResponse
+from app.schemas.planning_run import (
+    CanonicalCountsResponse,
+    PlanningRunCreateRequest,
+    PlanningRunListResponse,
+    PlanningRunResponse,
+)
 from app.services.canonical_promotion import PromotionError, PromotionResult, promote_upload_to_canonical
 from app.services.incoming_load import calculate_and_persist_incoming_load
 from app.services.machine_load import calculate_and_persist_machine_load
@@ -138,6 +143,65 @@ def recalculate_planning_run(
         raise
 
 
+def calculate_planning_run_response(planning_run_id: str, db: Session) -> PlanningRunResponse:
+    planning_run = recalculate_planning_run(planning_run_id=planning_run_id, db=db)
+    snapshot = _load_planning_snapshot(planning_run.id, db)
+    return _to_response(
+        planning_run,
+        snapshot,
+        _canonical_counts(planning_run.id, db),
+    )
+
+
+def get_planning_run(planning_run_id: str, db: Session) -> PlanningRunResponse:
+    planning_run = _load_planning_run(planning_run_id, db)
+    snapshot = _load_planning_snapshot(planning_run.id, db)
+    return _to_response(
+        planning_run,
+        snapshot,
+        _canonical_counts(planning_run.id, db),
+    )
+
+
+def list_planning_runs(
+    db: Session,
+    *,
+    page: int,
+    page_size: int,
+    status_filter: str | None = None,
+    latest_only: bool = False,
+) -> PlanningRunListResponse:
+    query = select(PlanningRun)
+    effective_status_filter = "CALCULATED" if latest_only and status_filter is None else status_filter
+    if effective_status_filter:
+        query = query.where(PlanningRun.status == effective_status_filter)
+    if latest_only:
+        query = query.order_by(PlanningRun.calculated_at.desc(), PlanningRun.created_at.desc(), PlanningRun.id.desc())
+    else:
+        query = query.order_by(PlanningRun.created_at.desc(), PlanningRun.id.desc())
+
+    total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
+    effective_page_size = 1 if latest_only else page_size
+    runs = list(
+        db.scalars(query.offset((page - 1) * effective_page_size).limit(effective_page_size))
+    )
+
+    items = [
+        _to_response(
+            planning_run=planning_run,
+            snapshot=_load_planning_snapshot(planning_run.id, db),
+            promotion_result=_canonical_counts(planning_run.id, db),
+        )
+        for planning_run in runs
+    ]
+    return PlanningRunListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=effective_page_size,
+    )
+
+
 def _load_upload_for_planning(upload_batch_id: str, db: Session) -> UploadBatch:
     upload_batch = db.get(UploadBatch, upload_batch_id)
     if upload_batch is None:
@@ -156,6 +220,19 @@ def _load_planning_run(planning_run_id: str, db: Session) -> PlanningRun:
             detail={"code": "PLANNING_RUN_NOT_FOUND", "message": f"PlanningRun {planning_run_id} was not found."},
         )
     return planning_run
+
+
+def _load_planning_snapshot(planning_run_id: str, db: Session) -> PlanningSnapshot:
+    snapshot = db.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+    if snapshot is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "PLANNING_SNAPSHOT_NOT_FOUND",
+                "message": f"PlanningSnapshot for PlanningRun {planning_run_id} was not found.",
+            },
+        )
+    return snapshot
 
 
 def _mark_planning_run_failed(
@@ -284,7 +361,7 @@ def _ensure_upload_can_create_planning_run(upload_batch: UploadBatch, db: Sessio
 def _to_response(
     planning_run: PlanningRun,
     snapshot: PlanningSnapshot,
-    promotion_result: PromotionResult,
+    promotion_result: PromotionResult | CanonicalCountsResponse,
 ) -> PlanningRunResponse:
     return PlanningRunResponse(
         id=planning_run.id,
@@ -303,6 +380,32 @@ def _to_response(
             routing_operations=promotion_result.routing_operations,
             machines=promotion_result.machines,
             vendors=promotion_result.vendors,
+        ),
+    )
+
+
+def _canonical_counts(planning_run_id: str, db: Session) -> CanonicalCountsResponse:
+    return CanonicalCountsResponse(
+        valves=db.scalar(select(func.count()).select_from(Valve).where(Valve.planning_run_id == planning_run_id)) or 0,
+        component_statuses=(
+            db.scalar(
+                select(func.count()).select_from(ComponentStatus).where(ComponentStatus.planning_run_id == planning_run_id)
+            )
+            or 0
+        ),
+        routing_operations=(
+            db.scalar(
+                select(func.count()).select_from(RoutingOperation).where(RoutingOperation.planning_run_id == planning_run_id)
+            )
+            or 0
+        ),
+        machines=(
+            db.scalar(select(func.count()).select_from(Machine).where(Machine.planning_run_id == planning_run_id))
+            or 0
+        ),
+        vendors=(
+            db.scalar(select(func.count()).select_from(Vendor).where(Vendor.planning_run_id == planning_run_id))
+            or 0
         ),
     )
 

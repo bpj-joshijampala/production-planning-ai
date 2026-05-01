@@ -12,6 +12,8 @@ htmlcov/
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/vite*.log
+frontend/vite*.err.log
 *.tsbuildinfo
 
 # Runtime state

@@ -233,6 +233,62 @@ def test_create_planning_run_rejects_invalid_horizon(client: TestClient) -> None
     assert response.status_code == 422
 
 
+def test_calculate_get_and_list_planning_runs_endpoints(client: TestClient) -> None:
+    first_upload_id = _upload_workbook(client, workbook_bytes())["id"]
+    second_upload_id = _upload_workbook(client, workbook_bytes(sheets=_second_workbook_rows()))["id"]
+    third_upload_id = _upload_workbook(client, workbook_bytes(sheets=_third_workbook_rows()))["id"]
+
+    first_run = client.post(
+        "/api/v1/planning-runs",
+        json={"upload_batch_id": first_upload_id, "planning_start_date": "2026-04-21", "planning_horizon_days": 7},
+    )
+    second_run = client.post(
+        "/api/v1/planning-runs",
+        json={"upload_batch_id": second_upload_id, "planning_start_date": "2026-04-22", "planning_horizon_days": 14},
+    )
+    third_run = client.post(
+        "/api/v1/planning-runs",
+        json={"upload_batch_id": third_upload_id, "planning_start_date": "2026-04-23", "planning_horizon_days": 7},
+    )
+
+    assert first_run.status_code == 201
+    assert second_run.status_code == 201
+    assert third_run.status_code == 201
+
+    calculate_response = client.post(f"/api/v1/planning-runs/{second_run.json()['id']}/calculate")
+    assert calculate_response.status_code == 200
+    assert calculate_response.json()["status"] == "CALCULATED"
+    assert calculate_response.json()["calculated_at"] is not None
+
+    detail_response = client.get(f"/api/v1/planning-runs/{second_run.json()['id']}")
+    assert detail_response.status_code == 200
+    assert detail_response.json()["id"] == second_run.json()["id"]
+    assert detail_response.json()["planning_horizon_days"] == 14
+    assert detail_response.json()["canonical_counts"]["valves"] == 1
+
+    list_response = client.get("/api/v1/planning-runs")
+    assert list_response.status_code == 200
+    assert [row["id"] for row in list_response.json()["items"]] == [
+        third_run.json()["id"],
+        second_run.json()["id"],
+        first_run.json()["id"],
+    ]
+
+    latest_default = client.get("/api/v1/planning-runs", params={"latest_only": "true"})
+    assert latest_default.status_code == 200
+    latest_default_payload = latest_default.json()
+    assert latest_default_payload["total"] == 1
+    assert latest_default_payload["page_size"] == 1
+    assert [row["id"] for row in latest_default_payload["items"]] == [second_run.json()["id"]]
+
+    latest_calculated = client.get("/api/v1/planning-runs", params={"status": "CALCULATED", "latest_only": "true"})
+    assert latest_calculated.status_code == 200
+    payload = latest_calculated.json()
+    assert payload["total"] == 1
+    assert payload["page_size"] == 1
+    assert [row["id"] for row in payload["items"]] == [second_run.json()["id"]]
+
+
 def _upload_workbook(client: TestClient, content: bytes) -> dict[str, object]:
     response = client.post(
         "/api/v1/uploads",
@@ -241,3 +297,17 @@ def _upload_workbook(client: TestClient, content: bytes) -> dict[str, object]:
 
     assert response.status_code == 201
     return response.json()
+
+
+def _second_workbook_rows() -> dict[str, list[list[object]]]:
+    rows = minimal_workbook_rows()
+    rows["Valve_Plan"][1] = ["V-200", "O-200", "Beta", "2026-05-02", "2026-04-29", 2.0]
+    rows["Component_Status"][1] = ["V-200", "Body", 1, "Y", "N", "2026-04-25", "Y"]
+    return rows
+
+
+def _third_workbook_rows() -> dict[str, list[list[object]]]:
+    rows = minimal_workbook_rows()
+    rows["Valve_Plan"][1] = ["V-300", "O-300", "Gamma", "2026-05-03", "2026-04-30", 0.8]
+    rows["Component_Status"][1] = ["V-300", "Body", 1, "N", "Y", "2026-04-23", "Y"]
+    return rows
