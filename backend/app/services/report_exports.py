@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -139,6 +139,47 @@ def get_report_export(report_export_id: str, db: Session) -> ReportExport:
             detail={"code": "REPORT_EXPORT_NOT_FOUND", "message": f"Report export {report_export_id} was not found."},
         )
     return report_export
+
+
+def list_report_exports(
+    *,
+    planning_run_id: str,
+    db: Session,
+    page: int,
+    page_size: int,
+    latest_only: bool = False,
+) -> tuple[list[ReportExport], int]:
+    _load_planning_run(planning_run_id=planning_run_id, db=db)
+
+    query = (
+        select(ReportExport)
+        .where(ReportExport.planning_run_id == planning_run_id)
+        .order_by(ReportExport.generated_at.desc(), ReportExport.id.desc())
+    )
+    if latest_only:
+        rows = list(db.scalars(query))
+        latest_by_type: list[ReportExport] = []
+        seen_report_types: set[str] = set()
+        for row in rows:
+            if row.report_type in seen_report_types:
+                continue
+            latest_by_type.append(row)
+            seen_report_types.add(row.report_type)
+
+        total = len(latest_by_type)
+        offset = (page - 1) * page_size
+        return latest_by_type[offset : offset + page_size], total
+
+    total = (
+        db.scalar(
+            select(func.count())
+            .select_from(ReportExport)
+            .where(ReportExport.planning_run_id == planning_run_id)
+        )
+        or 0
+    )
+    rows = list(db.scalars(query.offset((page - 1) * page_size).limit(page_size)))
+    return rows, total
 
 
 def resolve_report_export_download(report_export_id: str, db: Session) -> tuple[ReportExport, Path]:

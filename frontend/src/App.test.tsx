@@ -606,7 +606,8 @@ describe("App", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Planning run setup next" }));
-    fireEvent.change(screen.getByLabelText("Planning start date"), {
+    const planningStartDateInput = await screen.findByLabelText("Planning start date");
+    fireEvent.change(planningStartDateInput, {
       target: { value: "2026-05-02" },
     });
     fireEvent.change(screen.getByLabelText("Planning horizon"), {
@@ -2708,6 +2709,15 @@ describe("App", () => {
         });
       }
 
+      if (url.includes("/api/v1/planning-runs/run-20/exports?")) {
+        return createJsonResponse({
+          items: [],
+          total: 0,
+          page: 1,
+          page_size: 100,
+        });
+      }
+
       if (url.endsWith("/api/v1/planning-runs/run-20/exports")) {
         expect(init?.method).toBe("POST");
         const body = JSON.parse(String(init?.body ?? "{}")) as { report_type: string; file_format: string };
@@ -2725,6 +2735,7 @@ describe("App", () => {
           file_path: `data/exports/run-20/${body.report_type.toLowerCase()}.xlsx`,
           file_format: "XLSX",
           generated_by_user_id: "user-1",
+          generated_by_user_display_name: "Planner One",
           generated_at: "2026-05-01T09:00:00.000000Z",
           metadata: {
             sheet_names: [report.sheetName],
@@ -2766,8 +2777,101 @@ describe("App", () => {
         "href",
         `http://127.0.0.1:8000/api/v1/exports/export-${report.reportType}/download`,
       );
+      expect(within(reportCard as HTMLElement).getByText("Planner One")).toBeInTheDocument();
     }
 
     expect(requestedReportTypes).toEqual(reports.map((report) => report.reportType));
+  });
+
+  it("loads existing report downloads from export history", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs?latest_only=true")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "run-21",
+              upload_batch_id: "upload-21",
+              planning_start_date: "2026-04-21",
+              planning_horizon_days: 7,
+              status: "CALCULATED",
+              created_by_user_id: "user-1",
+              created_at: "2026-04-30T06:00:00.000000Z",
+              calculated_at: "2026-04-30T06:05:00.000000Z",
+              error_message: null,
+              snapshot_id: "snapshot-21",
+              canonical_counts: {
+                valves: 2,
+                component_statuses: 2,
+                routing_operations: 3,
+                machines: 2,
+                vendors: 2,
+              },
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 1,
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs/run-21/exports?")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "export-history-1",
+              planning_run_id: "run-21",
+              report_type: "MACHINE_LOAD",
+              file_path: "data/exports/run-21/machine_load.xlsx",
+              file_format: "XLSX",
+              generated_by_user_id: "user-1",
+              generated_by_user_display_name: "Development Planner",
+              generated_at: "2026-05-01T09:00:00.000000Z",
+              metadata: {
+                sheet_names: ["Machine_Load"],
+                sheet_row_counts: { Machine_Load: 2 },
+              },
+              download_url: "/api/v1/exports/export-history-1/download",
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 100,
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("local")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reports" }));
+
+    const machineLoadCard = await screen.findByText("Machine Load Report");
+    const reportCard = machineLoadCard.closest("section");
+    expect(reportCard).not.toBeNull();
+
+    expect(within(reportCard as HTMLElement).getByText("Development Planner")).toBeInTheDocument();
+    expect(within(reportCard as HTMLElement).getByText("2026-05-01T09:00:00.000000Z")).toBeInTheDocument();
+    expect(within(reportCard as HTMLElement).getByRole("link", { name: "Download" })).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:8000/api/v1/exports/export-history-1/download",
+    );
   });
 });

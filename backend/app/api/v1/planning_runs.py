@@ -5,7 +5,9 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.report_export import ReportExportCreateRequest, ReportExportResponse
+from app.models.output import ReportExport
+from app.models.user import User
+from app.schemas.report_export import ReportExportCreateRequest, ReportExportListResponse, ReportExportResponse
 from app.schemas.dashboard import (
     AssemblyRiskListResponse,
     ComponentStatusListResponse,
@@ -39,7 +41,7 @@ from app.services.planning_runs import (
     get_planning_run,
     list_planning_runs,
 )
-from app.services.report_exports import generate_first_build_report_export
+from app.services.report_exports import generate_first_build_report_export, list_report_exports
 
 router = APIRouter(prefix="/planning-runs", tags=["planning-runs"])
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
@@ -74,16 +76,29 @@ def create_report_export_endpoint(
         generated_by_user_id=DEV_USER_ID,
         db=db,
     )
-    return ReportExportResponse(
-        id=report_export.id,
-        planning_run_id=report_export.planning_run_id,
-        report_type=report_export.report_type,
-        file_path=report_export.file_path,
-        file_format=report_export.file_format,
-        generated_by_user_id=report_export.generated_by_user_id,
-        generated_at=report_export.generated_at,
-        metadata=json.loads(report_export.metadata_json) if report_export.metadata_json else None,
-        download_url=f"/api/v1/exports/{report_export.id}/download",
+    return _report_export_response(report_export, db)
+
+
+@router.get("/{planning_run_id}/exports", response_model=ReportExportListResponse)
+def list_report_exports_endpoint(
+    planning_run_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    latest_only: bool = Query(False),
+    db: Session = Depends(get_db),
+) -> ReportExportListResponse:
+    report_exports, total = list_report_exports(
+        planning_run_id=planning_run_id,
+        db=db,
+        page=page,
+        page_size=page_size,
+        latest_only=latest_only,
+    )
+    return ReportExportListResponse(
+        items=[_report_export_response(report_export, db) for report_export in report_exports],
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 
@@ -321,3 +336,19 @@ def get_throughput_endpoint(
     db: Session = Depends(get_db),
 ) -> ThroughputSummaryResponse:
     return get_throughput_summary(planning_run_id=planning_run_id, db=db)
+
+
+def _report_export_response(report_export: ReportExport, db: Session) -> ReportExportResponse:
+    generated_by_user = db.get(User, report_export.generated_by_user_id)
+    return ReportExportResponse(
+        id=report_export.id,
+        planning_run_id=report_export.planning_run_id,
+        report_type=report_export.report_type,
+        file_path=report_export.file_path,
+        file_format=report_export.file_format,
+        generated_by_user_id=report_export.generated_by_user_id,
+        generated_by_user_display_name=None if generated_by_user is None else generated_by_user.display_name,
+        generated_at=report_export.generated_at,
+        metadata=json.loads(report_export.metadata_json) if report_export.metadata_json else None,
+        download_url=f"/api/v1/exports/{report_export.id}/download",
+    )

@@ -53,6 +53,7 @@ def test_create_and_download_first_build_report_exports(client: TestClient) -> N
         assert payload["planning_run_id"] == planning_run_id
         assert payload["report_type"] == report_type
         assert payload["file_format"] == "XLSX"
+        assert payload["generated_by_user_display_name"] == "Development Planner"
         assert payload["download_url"] == f"/api/v1/exports/{payload['id']}/download"
         assert payload["metadata"]["sheet_names"] == [sheet_name]
         assert payload["metadata"]["sheet_row_counts"][sheet_name] >= 0
@@ -60,6 +61,7 @@ def test_create_and_download_first_build_report_exports(client: TestClient) -> N
         detail_response = client.get(f"/api/v1/exports/{payload['id']}")
         assert detail_response.status_code == 200
         assert detail_response.json()["id"] == payload["id"]
+        assert detail_response.json()["generated_by_user_display_name"] == "Development Planner"
 
         download_response = client.get(payload["download_url"])
         assert download_response.status_code == 200
@@ -82,6 +84,48 @@ def test_create_report_export_rejects_unsupported_format(client: TestClient) -> 
     )
 
     assert response.status_code == 422
+
+
+def test_list_report_exports_returns_history_and_latest_by_report_type(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+
+    first_machine_load = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "MACHINE_LOAD", "file_format": "XLSX"},
+    ).json()
+    latest_machine_load = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "MACHINE_LOAD", "file_format": "XLSX"},
+    ).json()
+    flow_blocker = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "FLOW_BLOCKER", "file_format": "XLSX"},
+    ).json()
+
+    history_response = client.get(f"/api/v1/planning-runs/{planning_run_id}/exports?page=1&page_size=100")
+    assert history_response.status_code == 200
+    history_payload = history_response.json()
+    assert history_payload["total"] == 3
+    assert {item["id"] for item in history_payload["items"]} == {
+        first_machine_load["id"],
+        latest_machine_load["id"],
+        flow_blocker["id"],
+    }
+
+    latest_response = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/exports?latest_only=true&page=1&page_size=100"
+    )
+    assert latest_response.status_code == 200
+    latest_payload = latest_response.json()
+    assert latest_payload["total"] == 2
+
+    latest_by_type = {item["report_type"]: item for item in latest_payload["items"]}
+    assert latest_by_type["MACHINE_LOAD"]["id"] == latest_machine_load["id"]
+    assert latest_by_type["FLOW_BLOCKER"]["id"] == flow_blocker["id"]
+    assert latest_by_type["MACHINE_LOAD"]["download_url"] == (
+        f"/api/v1/exports/{latest_machine_load['id']}/download"
+    )
+    assert latest_by_type["MACHINE_LOAD"]["generated_by_user_display_name"] == "Development Planner"
 
 
 def test_create_report_export_rejects_future_format_and_report_type(client: TestClient) -> None:

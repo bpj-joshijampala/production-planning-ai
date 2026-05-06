@@ -26,6 +26,14 @@ class ReportExportResponse(BaseModel):
     file_path: str
     file_format: str
     generated_by_user_id: str
+    generated_by_user_display_name: str | None
     generated_at: str
     metadata: dict[str, Any] | None
     download_url: str
+
+
+class ReportExportListResponse(BaseModel):
+    items: list[ReportExportResponse]
+    total: int
+    page: int
+    page_size: int

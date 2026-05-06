@@ -280,12 +280,20 @@ export interface ReportExportResponse {
   file_path: string;
   file_format: string;
   generated_by_user_id: string;
+  generated_by_user_display_name: string | null;
   generated_at: string;
   metadata: {
     sheet_names: string[];
     sheet_row_counts: Record<string, number>;
   } | null;
   download_url: string;
+}
+
+interface ReportExportListResponse {
+  items: ReportExportResponse[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 function apiBaseUrl() {
@@ -384,6 +392,19 @@ export async function createPlanningRunExport(
   return {
     ...payload,
     download_url: withAbsoluteApiUrl(payload.download_url),
+  };
+}
+
+export async function fetchPlanningRunExports(planningRunId: string): Promise<ReportExportListResponse> {
+  const payload = await getJson<ReportExportListResponse>(
+    `/api/v1/planning-runs/${planningRunId}/exports?latest_only=true&page=1&page_size=100`,
+  );
+  return {
+    ...payload,
+    items: payload.items.map((item) => ({
+      ...item,
+      download_url: withAbsoluteApiUrl(item.download_url),
+    })),
   };
 }
 
