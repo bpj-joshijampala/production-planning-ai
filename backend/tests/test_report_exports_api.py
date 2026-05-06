@@ -146,6 +146,37 @@ def test_create_report_export_rejects_future_format_and_report_type(client: Test
     assert weekly_response.json()["detail"]["code"] == "UNSUPPORTED_REPORT_TYPE"
 
 
+def test_create_report_export_returns_structured_error_and_logs_unexpected_failure(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+    logged_messages: list[str] = []
+
+    def fail_export(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic export failure")
+
+    def capture_exception(message: str, *args: object, **_kwargs: object) -> None:
+        logged_messages.append(message % args)
+
+    monkeypatch.setattr("app.api.v1.planning_runs.generate_first_build_report_export", fail_export)
+    monkeypatch.setattr("app.api.v1.planning_runs.logger.exception", capture_exception)
+
+    response = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "MACHINE_LOAD", "file_format": "XLSX"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "EXPORT_FAILED",
+        "message": "Report export failed. Retry the export or contact support if the generated file is still unavailable.",
+    }
+    assert logged_messages == [
+        f"Report export failed planning_run_id={planning_run_id} report_type=MACHINE_LOAD file_format=XLSX"
+    ]
+
+
 def _create_calculated_planning_run(client: TestClient) -> str:
     upload_response = client.post(
         "/api/v1/uploads",

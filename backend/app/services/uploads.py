@@ -1,6 +1,7 @@
 from contextlib import suppress
 from hashlib import sha256
 import json
+import logging
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile, status
@@ -24,6 +25,7 @@ from app.schemas.upload import (
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 SUPPORTED_EXTENSION = ".xlsx"
 UNSUPPORTED_EXTENSIONS = {".xls", ".xlsm", ".csv", ".tsv"}
+logger = logging.getLogger(__name__)
 
 
 def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBatchResponse:
@@ -50,6 +52,7 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
     try:
         parsed_workbook = parse_workbook_with_metadata(content)
     except WorkbookParseError as exc:
+        logger.warning("Workbook parse failed filename=%s error=%s", original_filename, exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "INVALID_WORKBOOK", "message": str(exc)},
@@ -100,6 +103,7 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
     except Exception:
         db.rollback()
         _remove_stored_upload(storage_path, upload_dir)
+        logger.exception("Upload persistence failed upload_batch_id=%s filename=%s", upload_id, original_filename)
         raise
 
     db.refresh(upload_batch)

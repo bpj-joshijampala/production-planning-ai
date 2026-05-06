@@ -433,6 +433,71 @@ def test_recalculate_planning_run_preserves_prior_outputs_when_rerun_fails(
     assert incoming_count == 2
 
 
+def test_calculate_planning_run_endpoint_returns_structured_failure_and_rolls_back_partial_outputs(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planning_run_id = _create_planning_run(client, workbook_bytes(sheets=_planning_workbook_rows()))
+    logged_messages: list[str] = []
+
+    def fail_throughput(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("synthetic throughput failure")
+
+    def capture_exception(message: str, *args: object, **_kwargs: object) -> None:
+        logged_messages.append(message % args)
+
+    monkeypatch.setattr("app.services.planning_runs.calculate_and_persist_throughput_summary", fail_throughput)
+    monkeypatch.setattr("app.services.planning_runs.logger.exception", capture_exception)
+    monkeypatch.setattr("app.api.v1.planning_runs.logger.exception", capture_exception)
+
+    response = client.post(f"/api/v1/planning-runs/{planning_run_id}/calculate")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "CALCULATION_FAILED",
+        "message": "Planning calculation failed. Review the PlanningRun error message, fix the input data or settings, and retry.",
+    }
+    assert logged_messages == [
+        f"PlanningRun recalculation failed planning_run_id={planning_run_id}",
+        f"Planning calculation failed planning_run_id={planning_run_id}",
+    ]
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        planning_run = session.get(PlanningRun, planning_run_id)
+        output_counts = {
+            model.__name__: session.scalar(
+                select(func.count()).select_from(model).where(model.planning_run_id == planning_run_id)
+            )
+            for model in (
+                IncomingLoadItem,
+                PlannedOperation,
+                MachineLoadSummary,
+                ValveReadinessSummary,
+                FlowBlocker,
+                Recommendation,
+                ThroughputSummary,
+                VendorLoadSummary,
+            )
+        }
+
+    assert planning_run is not None
+    assert planning_run.status == "FAILED"
+    assert planning_run.calculated_at is None
+    assert planning_run.error_message is not None
+    assert "synthetic throughput failure" in planning_run.error_message
+    assert output_counts == {
+        "IncomingLoadItem": 0,
+        "PlannedOperation": 0,
+        "MachineLoadSummary": 0,
+        "ValveReadinessSummary": 0,
+        "FlowBlocker": 0,
+        "Recommendation": 0,
+        "ThroughputSummary": 0,
+        "VendorLoadSummary": 0,
+    }
+
+
 def test_recalculate_planning_run_with_settings_override_persists_run_settings_and_snapshot(
     client: TestClient,
 ) -> None:

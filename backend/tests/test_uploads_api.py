@@ -167,6 +167,40 @@ def test_upload_rejects_unreadable_xlsx(client: TestClient) -> None:
     assert response.json()["detail"]["code"] == "INVALID_WORKBOOK"
 
 
+def test_upload_endpoint_returns_structured_error_and_logs_unexpected_failure(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged_messages: list[str] = []
+
+    def fail_create_upload(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("synthetic upload persistence failure")
+
+    def capture_exception(message: str, *args: object, **_kwargs: object) -> None:
+        logged_messages.append(message % args)
+
+    monkeypatch.setattr("app.api.v1.uploads.create_upload", fail_create_upload)
+    monkeypatch.setattr("app.api.v1.uploads.logger.exception", capture_exception)
+
+    response = client.post(
+        "/api/v1/uploads",
+        files={
+            "file": (
+                "plan.xlsx",
+                workbook_bytes(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == {
+        "code": "UPLOAD_FAILED",
+        "message": "Upload could not be saved and validated. Retry the upload or contact support if the problem continues.",
+    }
+    assert logged_messages == ["Upload failed while saving and validating workbook filename=plan.xlsx"]
+
+
 def test_upload_validation_flags_missing_required_sheet_and_column(client: TestClient) -> None:
     sheets = minimal_workbook_rows()
     del sheets["Vendor_Master"]

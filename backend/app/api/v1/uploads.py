@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, File, UploadFile, status
+import logging
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -7,6 +9,7 @@ from app.schemas.upload import UploadBatchResponse, ValidationIssuesResponse
 from app.services.uploads import create_upload, get_upload, get_validation_issues
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=UploadBatchResponse, status_code=status.HTTP_201_CREATED)
@@ -15,7 +18,19 @@ def upload_workbook(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> UploadBatchResponse:
-    return create_upload(file=file, db=db, settings=settings)
+    try:
+        return create_upload(file=file, db=db, settings=settings)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Upload failed while saving and validating workbook filename=%s", file.filename)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "UPLOAD_FAILED",
+                "message": "Upload could not be saved and validated. Retry the upload or contact support if the problem continues.",
+            },
+        ) from exc
 
 
 @router.get("/{upload_batch_id}", response_model=UploadBatchResponse)

@@ -1,7 +1,8 @@
 import json
+import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -45,6 +46,7 @@ from app.services.report_exports import generate_first_build_report_export, list
 
 router = APIRouter(prefix="/planning-runs", tags=["planning-runs"])
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
+logger = logging.getLogger(__name__)
 
 
 @router.post("", response_model=PlanningRunResponse, status_code=status.HTTP_201_CREATED)
@@ -60,7 +62,19 @@ def calculate_planning_run_endpoint(
     planning_run_id: str,
     db: Session = Depends(get_db),
 ) -> PlanningRunResponse:
-    return calculate_planning_run_response(planning_run_id=planning_run_id, db=db)
+    try:
+        return calculate_planning_run_response(planning_run_id=planning_run_id, db=db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Planning calculation failed planning_run_id=%s", planning_run_id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "CALCULATION_FAILED",
+                "message": "Planning calculation failed. Review the PlanningRun error message, fix the input data or settings, and retry.",
+            },
+        ) from exc
 
 
 @router.post("/{planning_run_id}/exports", response_model=ReportExportResponse, status_code=status.HTTP_201_CREATED)
@@ -69,13 +83,30 @@ def create_report_export_endpoint(
     request: ReportExportCreateRequest,
     db: Session = Depends(get_db),
 ) -> ReportExportResponse:
-    report_export = generate_first_build_report_export(
-        planning_run_id=planning_run_id,
-        report_type=request.report_type,
-        file_format=request.file_format,
-        generated_by_user_id=DEV_USER_ID,
-        db=db,
-    )
+    try:
+        report_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type=request.report_type,
+            file_format=request.file_format,
+            generated_by_user_id=DEV_USER_ID,
+            db=db,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "Report export failed planning_run_id=%s report_type=%s file_format=%s",
+            planning_run_id,
+            request.report_type,
+            request.file_format,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "EXPORT_FAILED",
+                "message": "Report export failed. Retry the export or contact support if the generated file is still unavailable.",
+            },
+        ) from exc
     return _report_export_response(report_export, db)
 
 

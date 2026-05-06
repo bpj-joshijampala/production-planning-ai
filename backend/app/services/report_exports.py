@@ -1,6 +1,7 @@
 from contextlib import suppress
 from pathlib import Path
 import json
+import logging
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -34,6 +35,7 @@ ALLOWED_REPORT_TYPES = {
 }
 SUPPORTED_FILE_FORMAT = "XLSX"
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
+logger = logging.getLogger(__name__)
 
 
 def generate_xlsx_report_export(
@@ -101,6 +103,7 @@ def generate_xlsx_report_export(
         db.rollback()
         if not audit_committed:
             _remove_generated_export(file_path=file_path, export_dir=export_dir)
+        logger.exception("Report export generation failed planning_run_id=%s report_type=%s", planning_run_id, report_type)
         raise
 
     return report_export

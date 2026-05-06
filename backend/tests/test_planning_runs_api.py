@@ -10,9 +10,9 @@ from sqlalchemy import func, select
 from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.main import create_app
-from app.models.canonical import Machine, Valve, Vendor
+from app.models.canonical import ComponentStatus, Machine, RoutingOperation, Valve, Vendor
 from app.models.planning_run import MasterDataVersion, PlanningRun, PlanningSnapshot
-from app.models.upload import UploadBatch
+from app.models.upload import ImportStagingRow, UploadBatch
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
 
 
@@ -202,6 +202,69 @@ def test_create_planning_run_rejects_duplicate_key_upload_without_server_error(c
     assert upload_payload["status"] == "VALIDATION_FAILED"
     assert response.status_code == 400
     assert response.json()["detail"]["code"] == "VALIDATION_BLOCKED"
+
+
+def test_create_planning_run_rolls_back_planning_run_and_canonical_rows_when_promotion_fails(
+    client: TestClient,
+) -> None:
+    upload_payload = _upload_workbook(client, workbook_bytes())
+    upload_id = str(upload_payload["id"])
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        valve_row = session.scalar(
+            select(ImportStagingRow)
+            .where(ImportStagingRow.upload_batch_id == upload_id)
+            .where(ImportStagingRow.sheet_name == "Valve_Plan")
+        )
+        assert valve_row is not None
+        session.add(
+            ImportStagingRow(
+                id="duplicate-staging-valve-for-api",
+                upload_batch_id=upload_id,
+                sheet_name="Valve_Plan",
+                row_number=99,
+                normalized_payload_json=valve_row.normalized_payload_json,
+                row_hash=valve_row.row_hash,
+                created_at=valve_row.created_at,
+            )
+        )
+        session.commit()
+
+    response = client.post(
+        "/api/v1/planning-runs",
+        json={
+            "upload_batch_id": upload_id,
+            "planning_start_date": "2026-04-21",
+            "planning_horizon_days": 7,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "code": "PROMOTION_INTEGRITY_ERROR",
+        "message": "Canonical promotion violated database constraints. Re-run validation or inspect staged rows.",
+    }
+
+    with session_factory() as session:
+        upload = session.get(UploadBatch, upload_id)
+        planning_run_count = session.scalar(select(func.count()).select_from(PlanningRun))
+        valve_count = session.scalar(select(func.count()).select_from(Valve))
+        component_count = session.scalar(select(func.count()).select_from(ComponentStatus))
+        routing_count = session.scalar(select(func.count()).select_from(RoutingOperation))
+        machine_count = session.scalar(select(func.count()).select_from(Machine))
+        vendor_count = session.scalar(select(func.count()).select_from(Vendor))
+        snapshot_count = session.scalar(select(func.count()).select_from(PlanningSnapshot))
+
+    assert upload is not None
+    assert upload.status == "VALIDATED"
+    assert planning_run_count == 0
+    assert valve_count == 0
+    assert component_count == 0
+    assert routing_count == 0
+    assert machine_count == 0
+    assert vendor_count == 0
+    assert snapshot_count == 0
 
 
 def test_create_planning_run_rejects_missing_upload(client: TestClient) -> None:

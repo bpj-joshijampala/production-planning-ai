@@ -1,4 +1,5 @@
 from datetime import date
+import logging
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
@@ -25,6 +26,7 @@ from app.services.recommendations import calculate_and_persist_placeholder_recom
 from app.services.throughput import calculate_and_persist_throughput_summary
 
 DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
+logger = logging.getLogger(__name__)
 
 
 def create_planning_run(request: PlanningRunCreateRequest, db: Session) -> PlanningRunResponse:
@@ -134,6 +136,7 @@ def recalculate_planning_run(
         return planning_run
     except Exception as exc:
         db.rollback()
+        logger.exception("PlanningRun recalculation failed planning_run_id=%s", planning_run_id)
         _mark_planning_run_failed(
             planning_run_id=planning_run_id,
             error_message=str(exc),
