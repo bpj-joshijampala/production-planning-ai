@@ -1,6 +1,8 @@
 # Machine Shop Planning Software
 
-Milestone 0 establishes the local development foundation for the V1 planning cockpit.
+This repository contains the V1 planning cockpit for machine shop scheduling. The first usable build covers workbook upload, validation, planning calculations, dashboards, and first-priority Excel exports.
+
+For the full first usable build workflow, including migrations, sample data, local reset, and upload/export paths, see [First Build Developer Runbook](docs/implementation/FIRST_BUILD_RUNBOOK.md).
 
 ## Prerequisites
 
@@ -83,4 +85,4 @@ Runtime files live under `data/` and are not committed:
 - `data/uploads/`
 - `data/exports/`
 
-The application creates required runtime directories on startup.
+The application creates required runtime directories on startup. See the first build runbook for safe local reset steps.
