@@ -60,6 +60,7 @@ def generate_xlsx_report_export(
     export_dir.mkdir(parents=True, exist_ok=True)
 
     file_path = export_dir / _build_export_filename(report_type=report_type, generated_at=generated_at)
+    audit_committed = False
 
     try:
         workbook = build_export_workbook(
@@ -94,10 +95,12 @@ def generate_xlsx_report_export(
         )
         db.add(report_export)
         db.commit()
+        audit_committed = True
         db.refresh(report_export)
     except Exception:
         db.rollback()
-        _remove_generated_export(file_path=file_path, export_dir=export_dir)
+        if not audit_committed:
+            _remove_generated_export(file_path=file_path, export_dir=export_dir)
         raise
 
     return report_export

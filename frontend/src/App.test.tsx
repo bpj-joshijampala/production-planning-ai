@@ -2874,4 +2874,93 @@ describe("App", () => {
       "http://127.0.0.1:8000/api/v1/exports/export-history-1/download",
     );
   });
+
+  it("renders report generation failures as an error banner", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs?latest_only=true")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "run-22",
+              upload_batch_id: "upload-22",
+              planning_start_date: "2026-04-21",
+              planning_horizon_days: 7,
+              status: "CALCULATED",
+              created_by_user_id: "user-1",
+              created_at: "2026-04-30T06:00:00.000000Z",
+              calculated_at: "2026-04-30T06:05:00.000000Z",
+              error_message: null,
+              snapshot_id: "snapshot-22",
+              canonical_counts: {
+                valves: 2,
+                component_statuses: 2,
+                routing_operations: 3,
+                machines: 2,
+                vendors: 2,
+              },
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 1,
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs/run-22/exports?")) {
+        return createJsonResponse({
+          items: [],
+          total: 0,
+          page: 1,
+          page_size: 100,
+        });
+      }
+
+      if (url.endsWith("/api/v1/planning-runs/run-22/exports")) {
+        expect(init?.method).toBe("POST");
+        return createJsonResponse(
+          {
+            detail: {
+              code: "REPORT_EXPORT_FAILED",
+              message: "Report export could not be generated.",
+            },
+          },
+          { ok: false, status: 500 },
+        );
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("local")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reports" }));
+
+    const machineLoadCard = await screen.findByText("Machine Load Report");
+    const reportCard = machineLoadCard.closest("section");
+    expect(reportCard).not.toBeNull();
+
+    fireEvent.click(within(reportCard as HTMLElement).getByRole("button", { name: "Generate workbook" }));
+
+    const errorBanner = await screen.findByText("Report export could not be generated.");
+    expect(errorBanner).toHaveClass("feedback-banner", "error");
+    expect(errorBanner).not.toHaveClass("success");
+    expect(within(reportCard as HTMLElement).queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+  });
 });

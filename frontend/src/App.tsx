@@ -150,7 +150,7 @@ type ReportsViewState =
       planningRun: PlanningRunResponse;
       generatedExports: Partial<Record<ReportType, ReportExportResponse>>;
       generatingReportType: ReportType | null;
-      message: string | null;
+      message: { tone: "success" | "error"; text: string } | null;
     };
 
 type RecommendationActionDraft = {
@@ -839,7 +839,7 @@ function App() {
                 [reportType]: reportExport,
               },
               generatingReportType: null,
-              message: `${reportLabel(reportType)} generated.`,
+              message: { tone: "success", text: `${reportLabel(reportType)} generated.` },
             },
       );
     } catch (error) {
@@ -850,7 +850,7 @@ function App() {
           : {
               ...current,
               generatingReportType: null,
-              message,
+              message: { tone: "error", text: message },
             },
       );
     }
@@ -1795,7 +1795,7 @@ function ReportsWorkspace({
           ) : null}
           {reportsViewState.status === "error" ? <p className="feedback-banner error">{reportsViewState.message}</p> : null}
           {reportsViewState.status === "empty" ? <p className="feedback-banner warning">{reportsViewState.message}</p> : null}
-          {message ? <p className="feedback-banner success">{message}</p> : null}
+          {message ? <p className={`feedback-banner ${message.tone}`}>{message.text}</p> : null}
         </div>
 
         <aside className="workspace-side" aria-label="Reports status">

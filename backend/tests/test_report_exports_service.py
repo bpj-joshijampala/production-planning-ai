@@ -175,6 +175,61 @@ def test_generate_xlsx_report_export_removes_file_if_audit_write_fails(
     assert export_count == 0
 
 
+def test_generate_xlsx_report_export_keeps_file_if_refresh_fails_after_audit_commit(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+    export_dir = get_settings().export_dir / planning_run_id
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        machine_rows = [
+            {
+                "Machine_Type": row.machine_type,
+                "Total_Operation_Hours": row.total_operation_hours,
+                "Status": row.status,
+            }
+            for row in session.scalars(
+                select(MachineLoadSummary)
+                .where(MachineLoadSummary.planning_run_id == planning_run_id)
+                .order_by(MachineLoadSummary.machine_type.asc())
+            )
+        ]
+
+        def fail_refresh(_instance: object) -> None:
+            raise RuntimeError("post-commit refresh failed")
+
+        monkeypatch.setattr(session, "refresh", fail_refresh)
+
+        with pytest.raises(RuntimeError, match="post-commit refresh failed"):
+            generate_xlsx_report_export(
+                planning_run_id=planning_run_id,
+                report_type="MACHINE_LOAD",
+                generated_by_user_id=DEV_USER_ID,
+                sheets=(
+                    ExportSheet(
+                        name="Machine_Load",
+                        columns=("Machine_Type", "Total_Operation_Hours", "Status"),
+                        rows=tuple(machine_rows),
+                    ),
+                ),
+                db=session,
+            )
+
+    generated_files = list(export_dir.glob("*.xlsx"))
+    assert len(generated_files) == 1
+
+    with session_factory() as session:
+        persisted_exports = list(
+            session.scalars(select(ReportExport).where(ReportExport.planning_run_id == planning_run_id))
+        )
+
+    assert len(persisted_exports) == 1
+    assert persisted_exports[0].file_path == str(generated_files[0])
+    assert generated_files[0].exists()
+
+
 def test_generate_xlsx_report_export_rejects_non_calculated_run(client: TestClient) -> None:
     upload_response = client.post(
         "/api/v1/uploads",
