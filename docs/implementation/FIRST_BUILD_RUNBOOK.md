@@ -218,7 +218,7 @@ After reset, rerun migrations:
 | --- | --- | --- |
 | SQLite database | `data/app.sqlite3` | `DATABASE_URL=sqlite:///./data/app.sqlite3` |
 | Uploaded workbooks | `data/uploads/<upload_batch_id>/<filename>` | `UPLOAD_DIR=./data/uploads` |
-| Generated exports | `data/exports/<planning_run_id>/<report_type>_<timestamp>.xlsx` | `EXPORT_DIR=./data/exports` |
+| Generated exports | `data/exports/<planning_run_id>/<report_type>_<timestamp>_<report_export_id>.xlsx` | `EXPORT_DIR=./data/exports` |
 
 The backend creates missing runtime directories on startup. Migrations create the SQLite file if it does not exist.
 

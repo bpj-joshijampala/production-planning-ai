@@ -1,5 +1,6 @@
 from copy import deepcopy
 from io import BytesIO
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -7,8 +8,11 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 import pytest
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import get_settings
+from app.db.session import create_session_factory
 from app.main import create_app
+from app.models.output import ReportExport
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
 
 
@@ -175,6 +179,39 @@ def test_create_report_export_returns_structured_error_and_logs_unexpected_failu
     assert logged_messages == [
         f"Report export failed planning_run_id={planning_run_id} report_type=MACHINE_LOAD file_format=XLSX"
     ]
+
+
+def test_download_report_export_rejects_file_paths_outside_export_dir(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+    outside_file = tmp_path / "not-in-export-dir.xlsx"
+    outside_file.write_bytes(b"outside export directory")
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        session.add(
+            ReportExport(
+                id="outside-export-path",
+                planning_run_id=planning_run_id,
+                report_type="MACHINE_LOAD",
+                file_path=str(outside_file),
+                file_format="XLSX",
+                generated_by_user_id=DEFAULT_DEV_USER_ID,
+                generated_at="2026-05-01T09:00:00.000000Z",
+                metadata_json='{"sheet_names":["Machine_Load"],"sheet_row_counts":{"Machine_Load":1}}',
+            )
+        )
+        session.commit()
+
+    response = client.get("/api/v1/exports/outside-export-path/download")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == {
+        "code": "REPORT_EXPORT_FILE_MISSING",
+        "message": "Generated file for report export outside-export-path was not found.",
+    }
 
 
 def _create_calculated_planning_run(client: TestClient) -> str:

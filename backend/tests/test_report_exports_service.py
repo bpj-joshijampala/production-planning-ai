@@ -230,6 +230,40 @@ def test_generate_xlsx_report_export_keeps_file_if_refresh_fails_after_audit_com
     assert generated_files[0].exists()
 
 
+def test_generate_xlsx_report_export_uses_unique_file_names_when_timestamp_matches(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+    monkeypatch.setattr("app.services.report_exports.utc_now_iso", lambda: "2026-05-01T09:00:00.000000Z")
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        first_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="MACHINE_LOAD",
+            file_format="XLSX",
+            db=session,
+        )
+        second_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="MACHINE_LOAD",
+            file_format="XLSX",
+            db=session,
+        )
+        first_export_id = first_export.id
+        second_export_id = second_export.id
+        first_path = Path(first_export.file_path)
+        second_path = Path(second_export.file_path)
+
+    assert first_export_id != second_export_id
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert first_path.name.startswith("machine_load_20260501T090000000000Z_")
+    assert second_path.name.startswith("machine_load_20260501T090000000000Z_")
+
+
 def test_generate_xlsx_report_export_rejects_non_calculated_run(client: TestClient) -> None:
     upload_response = client.post(
         "/api/v1/uploads",

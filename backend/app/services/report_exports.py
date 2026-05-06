@@ -57,11 +57,16 @@ def generate_xlsx_report_export(
     upload_batch = _load_upload_batch(upload_batch_id=planning_run.upload_batch_id, db=db)
     generated_by_user = _load_user(user_id=generated_by_user_id, db=db)
 
+    report_export_id = new_uuid()
     generated_at = utc_now_iso()
     export_dir = get_settings().export_dir / planning_run_id
     export_dir.mkdir(parents=True, exist_ok=True)
 
-    file_path = export_dir / _build_export_filename(report_type=report_type, generated_at=generated_at)
+    file_path = export_dir / _build_export_filename(
+        report_type=report_type,
+        generated_at=generated_at,
+        report_export_id=report_export_id,
+    )
     audit_committed = False
 
     try:
@@ -78,7 +83,7 @@ def generate_xlsx_report_export(
         workbook.save(file_path)
 
         report_export = ReportExport(
-            id=new_uuid(),
+            id=report_export_id,
             planning_run_id=planning_run_id,
             report_type=report_type,
             file_path=str(file_path),
@@ -190,8 +195,8 @@ def list_report_exports(
 
 def resolve_report_export_download(report_export_id: str, db: Session) -> tuple[ReportExport, Path]:
     report_export = get_report_export(report_export_id, db)
-    file_path = Path(report_export.file_path)
-    if not file_path.exists():
+    file_path = _resolve_export_file_path(report_export=report_export)
+    if not file_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={
@@ -202,9 +207,9 @@ def resolve_report_export_download(report_export_id: str, db: Session) -> tuple[
     return report_export, file_path
 
 
-def _build_export_filename(*, report_type: str, generated_at: str) -> str:
+def _build_export_filename(*, report_type: str, generated_at: str, report_export_id: str) -> str:
     safe_timestamp = generated_at.replace("-", "").replace(":", "").replace(".", "")
-    return f"{report_type.lower()}_{safe_timestamp}.xlsx"
+    return f"{report_type.lower()}_{safe_timestamp}_{report_export_id}.xlsx"
 
 
 def _build_export_info_rows(
@@ -548,6 +553,28 @@ def _load_user(*, user_id: str, db: Session) -> User:
             detail={"code": "USER_NOT_FOUND", "message": f"User {user_id} was not found."},
         )
     return user
+
+
+def _resolve_export_file_path(*, report_export: ReportExport) -> Path:
+    file_path = Path(report_export.file_path).resolve()
+    export_root = get_settings().export_dir.resolve()
+    try:
+        file_path.relative_to(export_root)
+    except ValueError as exc:
+        logger.warning(
+            "Report export path is outside export directory report_export_id=%s file_path=%s export_root=%s",
+            report_export.id,
+            file_path,
+            export_root,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "REPORT_EXPORT_FILE_MISSING",
+                "message": f"Generated file for report export {report_export.id} was not found.",
+            },
+        ) from exc
+    return file_path
 
 
 def _remove_generated_export(*, file_path: Path, export_dir: Path) -> None:
