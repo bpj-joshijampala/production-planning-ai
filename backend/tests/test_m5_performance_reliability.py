@@ -19,9 +19,12 @@ DATASET_NAME = "generated_v1_volume_75_valves"
 VALVE_COUNT = 75
 COMPONENT_COUNT = VALVE_COUNT * 2
 PLANNED_OPERATION_COUNT = VALVE_COUNT * 3
+HBM_QUEUE_OPERATION_COUNT = VALVE_COUNT * 2
+QUEUE_PAGE_SIZE = 50
 UPLOAD_VALIDATION_TARGET_SECONDS = 10.0
 CALCULATION_TARGET_SECONDS = 3.0
 DASHBOARD_TARGET_SECONDS = 1.0
+PAGINATED_TABLE_TARGET_SECONDS = 1.0
 EXPORT_TARGET_SECONDS = 10.0
 
 
@@ -113,6 +116,49 @@ def test_v1_volume_upload_calculation_dashboard_and_export_meet_m5_e4_targets(cl
         "dashboard_api",
         dashboard_seconds,
         DASHBOARD_TARGET_SECONDS,
+    )
+
+    queue_page_1_start = perf_counter()
+    queue_page_1_response = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/machine-load/HBM/queue",
+        params={"sort": "sort_sequence", "direction": "asc", "page": 1, "page_size": QUEUE_PAGE_SIZE},
+    )
+    queue_page_1_seconds = perf_counter() - queue_page_1_start
+
+    queue_page_2_start = perf_counter()
+    queue_page_2_response = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/machine-load/HBM/queue",
+        params={"sort": "sort_sequence", "direction": "asc", "page": 2, "page_size": QUEUE_PAGE_SIZE},
+    )
+    queue_page_2_seconds = perf_counter() - queue_page_2_start
+
+    assert queue_page_1_response.status_code == 200
+    assert queue_page_2_response.status_code == 200
+    queue_page_1_payload = queue_page_1_response.json()
+    queue_page_2_payload = queue_page_2_response.json()
+    assert queue_page_1_payload["machine_type"] == "HBM"
+    assert queue_page_2_payload["machine_type"] == "HBM"
+    assert queue_page_1_payload["total"] == HBM_QUEUE_OPERATION_COUNT
+    assert queue_page_2_payload["total"] == HBM_QUEUE_OPERATION_COUNT
+    assert queue_page_1_payload["page"] == 1
+    assert queue_page_2_payload["page"] == 2
+    assert queue_page_1_payload["page_size"] == QUEUE_PAGE_SIZE
+    assert queue_page_2_payload["page_size"] == QUEUE_PAGE_SIZE
+    assert len(queue_page_1_payload["items"]) == QUEUE_PAGE_SIZE
+    assert len(queue_page_2_payload["items"]) == QUEUE_PAGE_SIZE
+    assert {row["id"] for row in queue_page_1_payload["items"]}.isdisjoint(
+        {row["id"] for row in queue_page_2_payload["items"]}
+    )
+    assert queue_page_1_payload["items"][-1]["sort_sequence"] <= queue_page_2_payload["items"][0]["sort_sequence"]
+    assert queue_page_1_seconds < PAGINATED_TABLE_TARGET_SECONDS, _performance_message(
+        "machine_queue_page_1",
+        queue_page_1_seconds,
+        PAGINATED_TABLE_TARGET_SECONDS,
+    )
+    assert queue_page_2_seconds < PAGINATED_TABLE_TARGET_SECONDS, _performance_message(
+        "machine_queue_page_2",
+        queue_page_2_seconds,
+        PAGINATED_TABLE_TARGET_SECONDS,
     )
 
     export_start = perf_counter()
