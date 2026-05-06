@@ -2658,6 +2658,15 @@ describe("App", () => {
   });
 
   it("loads the reports workspace and generates a downloadable workbook", async () => {
+    const reports = [
+      { label: "Machine Load Report", reportType: "MACHINE_LOAD", sheetName: "Machine_Load" },
+      { label: "Subcontract Plan", reportType: "SUBCONTRACT_PLAN", sheetName: "Subcontract_Plan" },
+      { label: "Valve Readiness Report", reportType: "VALVE_READINESS", sheetName: "Valve_Readiness" },
+      { label: "Flow Blocker Report", reportType: "FLOW_BLOCKER", sheetName: "Flow_Blockers" },
+      { label: "Daily Execution Plan", reportType: "DAILY_EXECUTION", sheetName: "Daily_Execution" },
+    ];
+    const requestedReportTypes: string[] = [];
+
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
 
@@ -2701,19 +2710,27 @@ describe("App", () => {
 
       if (url.endsWith("/api/v1/planning-runs/run-20/exports")) {
         expect(init?.method).toBe("POST");
+        const body = JSON.parse(String(init?.body ?? "{}")) as { report_type: string; file_format: string };
+        const report = reports.find((item) => item.reportType === body.report_type);
+        if (!report) {
+          throw new Error(`Unexpected report type: ${body.report_type}`);
+        }
+        expect(body.file_format).toBe("XLSX");
+        requestedReportTypes.push(body.report_type);
+
         return createJsonResponse({
-          id: "export-20",
+          id: `export-${body.report_type}`,
           planning_run_id: "run-20",
-          report_type: "MACHINE_LOAD",
-          file_path: "data/exports/run-20/machine_load.xlsx",
+          report_type: body.report_type,
+          file_path: `data/exports/run-20/${body.report_type.toLowerCase()}.xlsx`,
           file_format: "XLSX",
           generated_by_user_id: "user-1",
           generated_at: "2026-05-01T09:00:00.000000Z",
           metadata: {
-            sheet_names: ["Machine_Load"],
-            sheet_row_counts: { Machine_Load: 2 },
+            sheet_names: [report.sheetName],
+            sheet_row_counts: { [report.sheetName]: 2 },
           },
-          download_url: "/api/v1/exports/export-20/download",
+          download_url: `/api/v1/exports/export-${body.report_type}/download`,
         });
       }
 
@@ -2734,19 +2751,23 @@ describe("App", () => {
       expect(screen.getByText("First usable build exports")).toBeInTheDocument();
     });
 
-    const machineLoadCard = screen.getByText("Machine Load Report").closest("section");
-    expect(machineLoadCard).not.toBeNull();
+    for (const report of reports) {
+      const reportCard = screen.getByText(report.label).closest("section");
+      expect(reportCard).not.toBeNull();
 
-    fireEvent.click(within(machineLoadCard as HTMLElement).getByRole("button", { name: "Generate workbook" }));
+      fireEvent.click(within(reportCard as HTMLElement).getByRole("button", { name: "Generate workbook" }));
 
-    await waitFor(() => {
-      expect(screen.getByText("Machine Load Report generated.")).toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(screen.getByText(`${report.label} generated.`)).toBeInTheDocument();
+      });
 
-    const downloadLink = within(machineLoadCard as HTMLElement).getByRole("link", { name: "Download" });
-    expect(downloadLink).toHaveAttribute(
-      "href",
-      "http://127.0.0.1:8000/api/v1/exports/export-20/download",
-    );
+      const downloadLink = within(reportCard as HTMLElement).getByRole("link", { name: "Download" });
+      expect(downloadLink).toHaveAttribute(
+        "href",
+        `http://127.0.0.1:8000/api/v1/exports/export-${report.reportType}/download`,
+      );
+    }
+
+    expect(requestedReportTypes).toEqual(reports.map((report) => report.reportType));
   });
 });

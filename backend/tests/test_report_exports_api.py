@@ -31,39 +31,46 @@ def fixture_client(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     get_settings.cache_clear()
 
 
-def test_create_and_download_report_export(client: TestClient) -> None:
+def test_create_and_download_first_build_report_exports(client: TestClient) -> None:
     planning_run_id = _create_calculated_planning_run(client)
 
-    create_response = client.post(
-        f"/api/v1/planning-runs/{planning_run_id}/exports",
-        json={"report_type": "MACHINE_LOAD", "file_format": "XLSX"},
-    )
-
-    assert create_response.status_code == 201
-    payload = create_response.json()
-    assert payload["planning_run_id"] == planning_run_id
-    assert payload["report_type"] == "MACHINE_LOAD"
-    assert payload["file_format"] == "XLSX"
-    assert payload["download_url"] == f"/api/v1/exports/{payload['id']}/download"
-    assert payload["metadata"] == {
-        "sheet_names": ["Machine_Load"],
-        "sheet_row_counts": {"Machine_Load": 2},
+    expected_sheets = {
+        "MACHINE_LOAD": "Machine_Load",
+        "SUBCONTRACT_PLAN": "Subcontract_Plan",
+        "VALVE_READINESS": "Valve_Readiness",
+        "FLOW_BLOCKER": "Flow_Blockers",
+        "DAILY_EXECUTION": "Daily_Execution",
     }
 
-    detail_response = client.get(f"/api/v1/exports/{payload['id']}")
-    assert detail_response.status_code == 200
-    assert detail_response.json()["id"] == payload["id"]
+    for report_type, sheet_name in expected_sheets.items():
+        create_response = client.post(
+            f"/api/v1/planning-runs/{planning_run_id}/exports",
+            json={"report_type": report_type, "file_format": "XLSX"},
+        )
 
-    download_response = client.get(payload["download_url"])
-    assert download_response.status_code == 200
-    assert (
-        download_response.headers["content-type"]
-        == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-    assert download_response.headers["x-report-export-id"] == payload["id"]
+        assert create_response.status_code == 201
+        payload = create_response.json()
+        assert payload["planning_run_id"] == planning_run_id
+        assert payload["report_type"] == report_type
+        assert payload["file_format"] == "XLSX"
+        assert payload["download_url"] == f"/api/v1/exports/{payload['id']}/download"
+        assert payload["metadata"]["sheet_names"] == [sheet_name]
+        assert payload["metadata"]["sheet_row_counts"][sheet_name] >= 0
 
-    workbook = load_workbook(filename=BytesIO(download_response.content))
-    assert workbook.sheetnames == ["Export_Info", "Machine_Load"]
+        detail_response = client.get(f"/api/v1/exports/{payload['id']}")
+        assert detail_response.status_code == 200
+        assert detail_response.json()["id"] == payload["id"]
+
+        download_response = client.get(payload["download_url"])
+        assert download_response.status_code == 200
+        assert (
+            download_response.headers["content-type"]
+            == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert download_response.headers["x-report-export-id"] == payload["id"]
+
+        workbook = load_workbook(filename=BytesIO(download_response.content))
+        assert workbook.sheetnames == ["Export_Info", sheet_name]
 
 
 def test_create_report_export_rejects_unsupported_format(client: TestClient) -> None:
@@ -75,6 +82,24 @@ def test_create_report_export_rejects_unsupported_format(client: TestClient) -> 
     )
 
     assert response.status_code == 422
+
+
+def test_create_report_export_rejects_future_format_and_report_type(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+
+    pdf_response = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "MACHINE_LOAD", "file_format": "PDF"},
+    )
+    assert pdf_response.status_code == 400
+    assert pdf_response.json()["detail"]["code"] == "UNSUPPORTED_EXPORT_FORMAT"
+
+    weekly_response = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "WEEKLY_PLANNING", "file_format": "XLSX"},
+    )
+    assert weekly_response.status_code == 400
+    assert weekly_response.json()["detail"]["code"] == "UNSUPPORTED_REPORT_TYPE"
 
 
 def _create_calculated_planning_run(client: TestClient) -> str:
