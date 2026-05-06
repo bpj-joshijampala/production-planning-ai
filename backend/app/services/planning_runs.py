@@ -77,6 +77,7 @@ def recalculate_planning_run(
     db: Session,
     *,
     settings_override: PlanningSettingsOverride | None = None,
+    calculated_by_user_id: str = DEFAULT_DEV_USER_ID,
 ) -> PlanningRun:
     planning_run = _load_planning_run(planning_run_id, db)
     previous_calculated_at = planning_run.calculated_at
@@ -129,6 +130,7 @@ def recalculate_planning_run(
         upload_batch.status = "CALCULATED"
         planning_run.status = "CALCULATED"
         planning_run.calculated_at = utc_now_iso()
+        planning_run.calculated_by_user_id = calculated_by_user_id
         planning_run.error_message = None
         upsert_planning_run_metadata(
             planning_run.id,
@@ -146,13 +148,23 @@ def recalculate_planning_run(
             planning_run_id=planning_run_id,
             error_message=str(exc),
             calculated_at=previous_calculated_at,
+            calculated_by_user_id=calculated_by_user_id,
             db=db,
         )
         raise
 
 
-def calculate_planning_run_response(planning_run_id: str, db: Session) -> PlanningRunResponse:
-    planning_run = recalculate_planning_run(planning_run_id=planning_run_id, db=db)
+def calculate_planning_run_response(
+    planning_run_id: str,
+    db: Session,
+    *,
+    calculated_by_user_id: str = DEFAULT_DEV_USER_ID,
+) -> PlanningRunResponse:
+    planning_run = recalculate_planning_run(
+        planning_run_id=planning_run_id,
+        db=db,
+        calculated_by_user_id=calculated_by_user_id,
+    )
     snapshot = _load_planning_snapshot(planning_run.id, db)
     return _to_response(
         planning_run,
@@ -248,6 +260,7 @@ def _mark_planning_run_failed(
     planning_run_id: str,
     error_message: str,
     calculated_at: str | None,
+    calculated_by_user_id: str | None,
     db: Session,
 ) -> None:
     try:
@@ -257,6 +270,7 @@ def _mark_planning_run_failed(
         planning_run.status = "FAILED"
         planning_run.error_message = error_message
         planning_run.calculated_at = calculated_at
+        planning_run.calculated_by_user_id = calculated_by_user_id
         db.commit()
     except Exception:
         db.rollback()
@@ -380,6 +394,7 @@ def _to_response(
         created_by_user_id=planning_run.created_by_user_id,
         created_at=planning_run.created_at,
         calculated_at=planning_run.calculated_at,
+        calculated_by_user_id=planning_run.calculated_by_user_id,
         error_message=planning_run.error_message,
         snapshot_id=snapshot.id,
         canonical_counts=CanonicalCountsResponse(

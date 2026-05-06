@@ -132,6 +132,8 @@ def build_planning_snapshot_payload(*, planning_run: PlanningRun, db: Session) -
             "status": planning_run.status,
             "created_by_user_id": planning_run.created_by_user_id,
             "created_at": planning_run.created_at,
+            "calculated_at": planning_run.calculated_at,
+            "calculated_by_user_id": planning_run.calculated_by_user_id,
         },
         "row_counts": {key: len(rows) for key, rows in canonical.items()},
         "canonical_hash": _dataset_hash(canonical),

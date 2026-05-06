@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from sqlalchemy import func, select
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import get_settings
 from app.db.session import create_session_factory
 from app.main import create_app
@@ -57,6 +58,7 @@ def test_recalculate_planning_run_populates_core_outputs_and_marks_run_calculate
 
     assert planning_run.status == "CALCULATED"
     assert planning_run.calculated_at is not None
+    assert planning_run.calculated_by_user_id == DEFAULT_DEV_USER_ID
     assert planning_run.error_message is None
 
     with session_factory() as session:
@@ -484,6 +486,7 @@ def test_calculate_planning_run_endpoint_returns_structured_failure_and_rolls_ba
     assert planning_run is not None
     assert planning_run.status == "FAILED"
     assert planning_run.calculated_at is None
+    assert planning_run.calculated_by_user_id == DEFAULT_DEV_USER_ID
     assert planning_run.error_message is not None
     assert "synthetic throughput failure" in planning_run.error_message
     assert output_counts == {

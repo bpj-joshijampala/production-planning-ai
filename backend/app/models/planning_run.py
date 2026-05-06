@@ -15,6 +15,7 @@ class PlanningRun(Base):
         Index("ix_planning_runs_created_at", "created_at"),
         Index("ix_planning_runs_status", "status"),
         Index("ix_planning_runs_planning_start_date", "planning_start_date"),
+        Index("ix_planning_runs_calculated_by_user_id", "calculated_by_user_id"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
@@ -25,6 +26,7 @@ class PlanningRun(Base):
     created_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
     calculated_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    calculated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
 
 

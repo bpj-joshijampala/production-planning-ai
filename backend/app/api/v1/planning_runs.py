@@ -62,10 +62,14 @@ def create_planning_run_endpoint(
 def calculate_planning_run_endpoint(
     planning_run_id: str,
     db: Session = Depends(get_db),
-    _current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
+    current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
 ) -> PlanningRunResponse:
     try:
-        return calculate_planning_run_response(planning_run_id=planning_run_id, db=db)
+        return calculate_planning_run_response(
+            planning_run_id=planning_run_id,
+            db=db,
+            calculated_by_user_id=current_user.id,
+        )
     except HTTPException:
         raise
     except Exception as exc:

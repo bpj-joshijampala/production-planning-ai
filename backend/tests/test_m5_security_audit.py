@@ -6,6 +6,7 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import get_settings
@@ -54,6 +55,7 @@ def test_default_planner_user_is_used_for_upload_run_override_and_export_audit(c
 
     calculate_response = client.post(f"/api/v1/planning-runs/{planning_run_id}/calculate")
     assert calculate_response.status_code == 200
+    assert calculate_response.json()["calculated_by_user_id"] == DEFAULT_DEV_USER_ID
 
     recommendation_id = _first_recommendation_id(planning_run_id)
     override_response = client.post(
@@ -100,6 +102,7 @@ def test_default_planner_user_is_used_for_upload_run_override_and_export_audit(c
     assert planning_run.created_by_user_id == DEFAULT_DEV_USER_ID
     assert planning_run.created_at
     assert planning_run.calculated_at
+    assert planning_run.calculated_by_user_id == DEFAULT_DEV_USER_ID
 
     assert override is not None
     assert override.user_id == DEFAULT_DEV_USER_ID
@@ -134,6 +137,32 @@ def test_upload_rejects_unsupported_file_types_before_creating_audit_rows(
         upload_count = session.scalar(select(func.count()).select_from(UploadBatch))
 
     assert upload_count == 0
+
+
+def test_planning_run_calculation_actor_is_fk_constrained(client: TestClient) -> None:
+    upload_response = client.post(
+        "/api/v1/uploads",
+        files={"file": ("plan.xlsx", workbook_bytes(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert upload_response.status_code == 201
+    planning_run_response = client.post(
+        "/api/v1/planning-runs",
+        json={
+            "upload_batch_id": upload_response.json()["id"],
+            "planning_start_date": "2026-04-21",
+            "planning_horizon_days": 7,
+        },
+    )
+    assert planning_run_response.status_code == 201
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        planning_run = session.get(PlanningRun, planning_run_response.json()["id"])
+        assert planning_run is not None
+        planning_run.calculated_by_user_id = "missing-user"
+
+        with pytest.raises(IntegrityError, match="FOREIGN KEY"):
+            session.commit()
 
 
 def test_non_writer_role_can_export_but_cannot_upload(client: TestClient) -> None:

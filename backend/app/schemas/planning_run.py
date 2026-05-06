@@ -27,6 +27,7 @@ class PlanningRunResponse(BaseModel):
     created_by_user_id: str
     created_at: str
     calculated_at: str | None
+    calculated_by_user_id: str | None
     error_message: str | None
     snapshot_id: str
     canonical_counts: CanonicalCountsResponse
