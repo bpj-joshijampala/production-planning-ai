@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchHealth, type HealthResponse } from "./api/health";
 import {
   calculatePlanningRun,
+  createPlanningRunExport,
   createPlannerOverride,
   createPlanningRun,
   fetchAssemblyRisk,
@@ -24,6 +25,8 @@ import {
   type PlanningRunDashboardSummaryResponse,
   type PlanningRunResponse,
   type QueueOperationListResponse,
+  type ReportExportResponse,
+  type ReportType,
   type RecommendationItemResponse,
   type VendorLoadItemResponse,
   type ValveReadinessItemResponse,
@@ -57,7 +60,7 @@ type UploadState =
     }
   | { status: "error"; message: string };
 
-type ImplementedView = "Upload" | "Dashboard" | "Blockers" | "Machine Load" | "Valves" | "Recommendations";
+type ImplementedView = "Upload" | "Dashboard" | "Blockers" | "Machine Load" | "Valves" | "Recommendations" | "Reports";
 
 type QueueState =
   | { status: "idle" }
@@ -136,6 +139,19 @@ type BlockerViewState =
       blockers: FlowBlockerItemResponse[];
     };
 
+type ReportsViewState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "empty"; message: string }
+  | { status: "error"; message: string }
+  | {
+      status: "ready";
+      planningRun: PlanningRunResponse;
+      generatedExports: Partial<Record<ReportType, ReportExportResponse>>;
+      generatingReportType: ReportType | null;
+      message: string | null;
+    };
+
 type RecommendationActionDraft = {
   recommendationId: string;
   decisionMode: "ACCEPT" | "REJECT" | "OVERRIDE";
@@ -151,7 +167,39 @@ const navItems: Array<{ label: string; enabled: boolean; view?: ImplementedView 
   { label: "Machine Load", enabled: true, view: "Machine Load" },
   { label: "Valves", enabled: true, view: "Valves" },
   { label: "Recommendations", enabled: true, view: "Recommendations" },
-  { label: "Reports", enabled: false },
+  { label: "Reports", enabled: true, view: "Reports" },
+];
+
+const reportDefinitions: Array<{
+  reportType: ReportType;
+  label: string;
+  description: string;
+}> = [
+  {
+    reportType: "MACHINE_LOAD",
+    label: "Machine Load Report",
+    description: "Machine-wise load, overload, spare capacity, and utilization snapshot.",
+  },
+  {
+    reportType: "SUBCONTRACT_PLAN",
+    label: "Subcontract Plan",
+    description: "Vendor-facing recommendations, including batch opportunities.",
+  },
+  {
+    reportType: "VALVE_READINESS",
+    label: "Valve Readiness Report",
+    description: "Assembly-readiness, delay, and flow-balance view by valve.",
+  },
+  {
+    reportType: "FLOW_BLOCKER",
+    label: "Flow Blocker Report",
+    description: "Severity-ranked blockers with cause and recommended action.",
+  },
+  {
+    reportType: "DAILY_EXECUTION",
+    label: "Daily Execution Plan",
+    description: "Queue-ordered internal execution plan with action and delay flags.",
+  },
 ];
 
 function App() {
@@ -164,6 +212,7 @@ function App() {
   const [machineLoadViewState, setMachineLoadViewState] = useState<MachineLoadViewState>({ status: "idle" });
   const [valveViewState, setValveViewState] = useState<ValveViewState>({ status: "idle" });
   const [recommendationViewState, setRecommendationViewState] = useState<RecommendationViewState>({ status: "idle" });
+  const [reportsViewState, setReportsViewState] = useState<ReportsViewState>({ status: "idle" });
   const [recommendationActionDraft, setRecommendationActionDraft] = useState<RecommendationActionDraft | null>(null);
   const [recommendationActionMessage, setRecommendationActionMessage] = useState<string | null>(null);
   const [isSubmittingRecommendationAction, setIsSubmittingRecommendationAction] = useState(false);
@@ -181,6 +230,7 @@ function App() {
   const recommendationViewRequestIdRef = useRef(0);
   const dashboardViewRequestIdRef = useRef(0);
   const blockerViewRequestIdRef = useRef(0);
+  const reportsViewRequestIdRef = useRef(0);
   const planningSetupUploadIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -241,6 +291,14 @@ function App() {
     }
 
     void loadRecommendationWorkspace();
+  }, [activeView, connection.status]);
+
+  useEffect(() => {
+    if (activeView !== "Reports" || connection.status !== "connected") {
+      return;
+    }
+
+    void loadReportsWorkspace();
   }, [activeView, connection.status]);
 
   const validation = uploadState.status === "complete" ? uploadState.validation : null;
@@ -709,6 +767,89 @@ function App() {
     }
   }
 
+  async function loadReportsWorkspace() {
+    const reportsViewRequestId = reportsViewRequestIdRef.current + 1;
+    reportsViewRequestIdRef.current = reportsViewRequestId;
+    setReportsViewState({ status: "loading" });
+
+    try {
+      const planningRun = await fetchLatestCalculatedPlanningRun();
+      if (reportsViewRequestId !== reportsViewRequestIdRef.current) {
+        return;
+      }
+
+      if (!planningRun) {
+        setReportsViewState({
+          status: "empty",
+          message: "No calculated planning run yet. Finish planning run setup and calculation first.",
+        });
+        return;
+      }
+
+      setReportsViewState({
+        status: "ready",
+        planningRun,
+        generatedExports: {},
+        generatingReportType: null,
+        message: null,
+      });
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.message
+          : "Reports workspace could not be loaded. Retry when the API is ready.";
+      setReportsViewState({ status: "error", message });
+    }
+  }
+
+  async function generateReport(reportType: ReportType) {
+    if (reportsViewState.status !== "ready") {
+      return;
+    }
+
+    const planningRunId = reportsViewState.planningRun.id;
+    setReportsViewState((current) =>
+      current.status !== "ready" || current.planningRun.id !== planningRunId
+        ? current
+        : {
+            ...current,
+            generatingReportType: reportType,
+            message: null,
+          },
+    );
+
+    try {
+      const reportExport = await createPlanningRunExport(planningRunId, {
+        report_type: reportType,
+        file_format: "XLSX",
+      });
+      setReportsViewState((current) =>
+        current.status !== "ready" || current.planningRun.id !== planningRunId
+          ? current
+          : {
+              ...current,
+              generatedExports: {
+                ...current.generatedExports,
+                [reportType]: reportExport,
+              },
+              generatingReportType: null,
+              message: `${reportLabel(reportType)} generated.`,
+            },
+      );
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Report export could not be generated.";
+      setReportsViewState((current) =>
+        current.status !== "ready" || current.planningRun.id !== planningRunId
+          ? current
+          : {
+              ...current,
+              generatingReportType: null,
+              message,
+            },
+      );
+    }
+  }
+
   function startRecommendationAction(
     recommendationId: string,
     decisionMode: RecommendationActionDraft["decisionMode"],
@@ -1107,6 +1248,13 @@ function App() {
               : undefined
           }
           onRefresh={() => void loadValveWorkspace()}
+        />
+      ) : activeView === "Reports" ? (
+        <ReportsWorkspace
+          connection={connection}
+          reportsViewState={reportsViewState}
+          onGenerateReport={(reportType) => void generateReport(reportType)}
+          onRefresh={() => void loadReportsWorkspace()}
         />
       ) : (
         <RecommendationWorkspace
@@ -1588,6 +1736,178 @@ function BlockerWorkspace({
   );
 }
 
+function ReportsWorkspace({
+  connection,
+  reportsViewState,
+  onGenerateReport,
+  onRefresh,
+}: {
+  connection: ConnectionState;
+  reportsViewState: ReportsViewState;
+  onGenerateReport: (reportType: ReportType) => void;
+  onRefresh: () => void;
+}) {
+  const planningRun = reportsViewState.status === "ready" ? reportsViewState.planningRun : null;
+  const generatedExports = reportsViewState.status === "ready" ? reportsViewState.generatedExports : {};
+  const generatingReportType = reportsViewState.status === "ready" ? reportsViewState.generatingReportType : null;
+  const message = reportsViewState.status === "ready" ? reportsViewState.message : null;
+
+  return (
+    <>
+      <section className="workspace" aria-labelledby="reports-title">
+        <div className="workspace-main">
+          <div className="workspace-copy">
+            <p className="eyebrow">Reports</p>
+            <h2 id="reports-title">Generate the first-build planning workbooks straight from the latest calculated run.</h2>
+            <p className="workspace-intro">
+              Use these exports for machine-load review, vendor planning, valve readiness discussions, blocker cleanup, and
+              daily execution handoff.
+            </p>
+          </div>
+
+          <div className="action-row">
+            <button
+              className="primary-button"
+              disabled={reportsViewState.status === "loading" || connection.status !== "connected"}
+              onClick={onRefresh}
+              type="button"
+            >
+              {reportsViewState.status === "loading" ? "Loading reports..." : "Refresh reports"}
+            </button>
+          </div>
+
+          {connection.status === "unavailable" ? (
+            <p className="feedback-banner error">Backend unavailable. Start the API and refresh.</p>
+          ) : null}
+          {reportsViewState.status === "loading" ? (
+            <div aria-live="polite" className="progress-band" role="status">
+              <span>Loading latest calculated planning run and export options...</span>
+              <div aria-hidden="true" className="progress-track">
+                <div className="progress-indicator" />
+              </div>
+            </div>
+          ) : null}
+          {reportsViewState.status === "error" ? <p className="feedback-banner error">{reportsViewState.message}</p> : null}
+          {reportsViewState.status === "empty" ? <p className="feedback-banner warning">{reportsViewState.message}</p> : null}
+          {message ? <p className="feedback-banner success">{message}</p> : null}
+        </div>
+
+        <aside className="workspace-side" aria-label="Reports status">
+          <StatusStack
+            items={[
+              {
+                label: "Backend",
+                value:
+                  connection.status === "connected"
+                    ? `${connection.health.environment} ready`
+                    : connection.status === "checking"
+                      ? "Checking"
+                      : "Unavailable",
+              },
+              {
+                label: "Planning run",
+                value:
+                  planningRun !== null
+                    ? planningRun.id
+                    : reportsViewState.status === "loading"
+                      ? "Loading latest calculated run"
+                      : "No calculated run loaded",
+              },
+              {
+                label: "Export format",
+                value: "XLSX",
+              },
+            ]}
+          />
+
+          {planningRun ? (
+            <div className="side-summary">
+              <h3>Latest calculated run</h3>
+              <dl className="summary-grid">
+                <div>
+                  <dt>Planning start</dt>
+                  <dd>{planningRun.planning_start_date}</dd>
+                </div>
+                <div>
+                  <dt>Horizon</dt>
+                  <dd>{planningRun.planning_horizon_days} days</dd>
+                </div>
+                <div>
+                  <dt>Calculated at</dt>
+                  <dd>{planningRun.calculated_at ?? "-"}</dd>
+                </div>
+              </dl>
+            </div>
+          ) : (
+            <div className="side-note">
+              <h3>What this screen answers</h3>
+              <ul>
+                <li>Which planning workbook you need right now.</li>
+                <li>Whether the latest calculated run is ready for export.</li>
+                <li>Where to download the workbook after generation.</li>
+              </ul>
+            </div>
+          )}
+        </aside>
+      </section>
+
+      {reportsViewState.status === "ready" ? (
+        <section className="validation-layout" aria-labelledby="reports-results-title">
+          <div className="validation-header">
+            <p className="eyebrow">First usable build exports</p>
+            <h3 id="reports-results-title">Generate the report you need, then download the workbook from the result card.</h3>
+          </div>
+
+          <div className="report-grid">
+            {reportDefinitions.map((report) => {
+              const exportRecord = generatedExports[report.reportType] ?? null;
+              const isGenerating = generatingReportType === report.reportType;
+              return (
+                <section className="validation-section report-card" key={report.reportType}>
+                  <div className="validation-section-header">
+                    <h4>{report.label}</h4>
+                    <span>{report.reportType}</span>
+                  </div>
+                  <p className="workspace-intro">{report.description}</p>
+                  <div className="action-row">
+                    <button
+                      className="primary-button"
+                      disabled={generatingReportType !== null}
+                      onClick={() => onGenerateReport(report.reportType)}
+                      type="button"
+                    >
+                      {isGenerating ? "Generating..." : "Generate workbook"}
+                    </button>
+                    {exportRecord ? (
+                      <a className="secondary-button link-button" href={exportRecord.download_url} rel="noreferrer" target="_blank">
+                        Download
+                      </a>
+                    ) : null}
+                  </div>
+                  {exportRecord ? (
+                    <dl className="summary-grid">
+                      <div>
+                        <dt>Generated at</dt>
+                        <dd>{exportRecord.generated_at}</dd>
+                      </div>
+                      <div>
+                        <dt>Sheets</dt>
+                        <dd>{exportRecord.metadata?.sheet_names.join(", ") ?? "-"}</dd>
+                      </div>
+                    </dl>
+                  ) : (
+                    <p className="empty-state">No workbook generated for this report yet.</p>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
 function ValidationSection({
   title,
   issues,
@@ -1646,6 +1966,10 @@ function recommendedAction(issue: ValidationIssueResponse) {
   }
 
   return "Review before planning run.";
+}
+
+function reportLabel(reportType: ReportType) {
+  return reportDefinitions.find((report) => report.reportType === reportType)?.label ?? reportType;
 }
 
 function ConnectionBadge({ connection }: { connection: ConnectionState }) {

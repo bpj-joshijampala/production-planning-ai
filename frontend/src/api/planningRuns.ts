@@ -266,6 +266,28 @@ interface PlannerOverrideListResponse {
   overrides: PlannerOverrideResponse[];
 }
 
+export type ReportType =
+  | "MACHINE_LOAD"
+  | "SUBCONTRACT_PLAN"
+  | "VALVE_READINESS"
+  | "FLOW_BLOCKER"
+  | "DAILY_EXECUTION";
+
+export interface ReportExportResponse {
+  id: string;
+  planning_run_id: string;
+  report_type: string;
+  file_path: string;
+  file_format: string;
+  generated_by_user_id: string;
+  generated_at: string;
+  metadata: {
+    sheet_names: string[];
+    sheet_row_counts: Record<string, number>;
+  } | null;
+  download_url: string;
+}
+
 function apiBaseUrl() {
   return (import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl).replace(/\/$/, "");
 }
@@ -294,6 +316,14 @@ async function getJson<T>(path: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function withAbsoluteApiUrl(path: string) {
+  if (/^https?:\/\//.test(path)) {
+    return path;
+  }
+
+  return `${apiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function getAllPages<TItem, TResponse extends { items: TItem[]; total: number; page: number; page_size: number }>(
@@ -332,6 +362,29 @@ export async function createPlanningRun(request: {
   }
 
   return (await response.json()) as PlanningRunResponse;
+}
+
+export async function createPlanningRunExport(
+  planningRunId: string,
+  request: { report_type: ReportType; file_format: "XLSX" },
+): Promise<ReportExportResponse> {
+  const response = await fetch(`${apiBaseUrl()}/api/v1/planning-runs/${planningRunId}/exports`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    await parseError(response);
+  }
+
+  const payload = (await response.json()) as ReportExportResponse;
+  return {
+    ...payload,
+    download_url: withAbsoluteApiUrl(payload.download_url),
+  };
 }
 
 export async function calculatePlanningRun(planningRunId: string): Promise<PlanningRunResponse> {

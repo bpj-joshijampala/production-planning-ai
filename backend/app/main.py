@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.exports import router as exports_router
 from app.api.v1.health import router as health_router
 from app.api.v1.planner_overrides import router as planner_overrides_router
 from app.api.v1.planning_runs import router as planning_runs_router
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(exports_router, prefix="/api/v1")
     app.include_router(uploads_router, prefix="/api/v1")
     app.include_router(planning_runs_router, prefix="/api/v1")
     app.include_router(planner_overrides_router, prefix="/api/v1")

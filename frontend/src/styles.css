@@ -451,6 +451,22 @@ h4 {
   padding: 20px;
 }
 
+.report-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.report-card {
+  align-content: start;
+}
+
+.link-button {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  text-decoration: none;
+}
+
 .validation-section-header {
   align-items: center;
   display: flex;

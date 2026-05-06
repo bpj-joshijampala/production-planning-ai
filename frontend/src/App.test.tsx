@@ -2656,4 +2656,97 @@ describe("App", () => {
 
     expect(screen.getByText("HBM roughing")).toBeInTheDocument();
   });
+
+  it("loads the reports workspace and generates a downloadable workbook", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs?latest_only=true")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "run-20",
+              upload_batch_id: "upload-20",
+              planning_start_date: "2026-04-21",
+              planning_horizon_days: 7,
+              status: "CALCULATED",
+              created_by_user_id: "user-1",
+              created_at: "2026-04-30T06:00:00.000000Z",
+              calculated_at: "2026-04-30T06:05:00.000000Z",
+              error_message: null,
+              snapshot_id: "snapshot-20",
+              canonical_counts: {
+                valves: 2,
+                component_statuses: 2,
+                routing_operations: 3,
+                machines: 2,
+                vendors: 2,
+              },
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 1,
+        });
+      }
+
+      if (url.endsWith("/api/v1/planning-runs/run-20/exports")) {
+        expect(init?.method).toBe("POST");
+        return createJsonResponse({
+          id: "export-20",
+          planning_run_id: "run-20",
+          report_type: "MACHINE_LOAD",
+          file_path: "data/exports/run-20/machine_load.xlsx",
+          file_format: "XLSX",
+          generated_by_user_id: "user-1",
+          generated_at: "2026-05-01T09:00:00.000000Z",
+          metadata: {
+            sheet_names: ["Machine_Load"],
+            sheet_row_counts: { Machine_Load: 2 },
+          },
+          download_url: "/api/v1/exports/export-20/download",
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("local")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reports" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("First usable build exports")).toBeInTheDocument();
+    });
+
+    const machineLoadCard = screen.getByText("Machine Load Report").closest("section");
+    expect(machineLoadCard).not.toBeNull();
+
+    fireEvent.click(within(machineLoadCard as HTMLElement).getByRole("button", { name: "Generate workbook" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Machine Load Report generated.")).toBeInTheDocument();
+    });
+
+    const downloadLink = within(machineLoadCard as HTMLElement).getByRole("link", { name: "Download" });
+    expect(downloadLink).toHaveAttribute(
+      "href",
+      "http://127.0.0.1:8000/api/v1/exports/export-20/download",
+    );
+  });
 });

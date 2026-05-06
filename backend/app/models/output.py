@@ -388,6 +388,41 @@ class PlannerOverride(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
 
 
+class ReportExport(Base):
+    __tablename__ = "report_exports"
+    __table_args__ = (
+        CheckConstraint(
+            (
+                "report_type in ("
+                "'MACHINE_LOAD','SUBCONTRACT_PLAN','VALVE_READINESS',"
+                "'FLOW_BLOCKER','WEEKLY_PLANNING','DAILY_EXECUTION','A3_PLANNING'"
+                ")"
+            ),
+            name="ck_report_exports_report_type",
+        ),
+        CheckConstraint(
+            "file_format in ('XLSX', 'PDF', 'HTML')",
+            name="ck_report_exports_file_format",
+        ),
+        CheckConstraint("length(trim(file_path)) > 0", name="ck_report_exports_file_path_not_blank"),
+        CheckConstraint(
+            "metadata_json is null or json_valid(metadata_json)",
+            name="ck_report_exports_metadata_json",
+        ),
+        Index("ix_report_exports_run_report_type", "planning_run_id", "report_type"),
+        Index("ix_report_exports_generated_at", "generated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)
+    planning_run_id: Mapped[str] = mapped_column(ForeignKey("planning_runs.id"), nullable=False)
+    report_type: Mapped[str] = mapped_column(String, nullable=False)
+    file_path: Mapped[str] = mapped_column(String, nullable=False)
+    file_format: Mapped[str] = mapped_column(String, nullable=False)
+    generated_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
+    generated_at: Mapped[str] = mapped_column(String, nullable=False, default=utc_now_iso)
+    metadata_json: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class FlowBlocker(Base):
     __tablename__ = "flow_blockers"
     __table_args__ = (

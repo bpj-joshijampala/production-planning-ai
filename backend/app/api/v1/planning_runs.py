@@ -1,9 +1,11 @@
+import json
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.report_export import ReportExportCreateRequest, ReportExportResponse
 from app.schemas.dashboard import (
     AssemblyRiskListResponse,
     ComponentStatusListResponse,
@@ -37,8 +39,10 @@ from app.services.planning_runs import (
     get_planning_run,
     list_planning_runs,
 )
+from app.services.report_exports import generate_first_build_report_export
 
 router = APIRouter(prefix="/planning-runs", tags=["planning-runs"])
+DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 
 
 @router.post("", response_model=PlanningRunResponse, status_code=status.HTTP_201_CREATED)
@@ -55,6 +59,32 @@ def calculate_planning_run_endpoint(
     db: Session = Depends(get_db),
 ) -> PlanningRunResponse:
     return calculate_planning_run_response(planning_run_id=planning_run_id, db=db)
+
+
+@router.post("/{planning_run_id}/exports", response_model=ReportExportResponse, status_code=status.HTTP_201_CREATED)
+def create_report_export_endpoint(
+    planning_run_id: str,
+    request: ReportExportCreateRequest,
+    db: Session = Depends(get_db),
+) -> ReportExportResponse:
+    report_export = generate_first_build_report_export(
+        planning_run_id=planning_run_id,
+        report_type=request.report_type,
+        file_format=request.file_format,
+        generated_by_user_id=DEV_USER_ID,
+        db=db,
+    )
+    return ReportExportResponse(
+        id=report_export.id,
+        planning_run_id=report_export.planning_run_id,
+        report_type=report_export.report_type,
+        file_path=report_export.file_path,
+        file_format=report_export.file_format,
+        generated_by_user_id=report_export.generated_by_user_id,
+        generated_at=report_export.generated_at,
+        metadata=json.loads(report_export.metadata_json) if report_export.metadata_json else None,
+        download_url=f"/api/v1/exports/{report_export.id}/download",
+    )
 
 
 @router.get("", response_model=PlanningRunListResponse)
