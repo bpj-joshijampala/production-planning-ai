@@ -2,6 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.auth import DEFAULT_DEV_USER_ID, load_acting_user
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
 from app.models.canonical import Valve, Vendor
@@ -14,12 +15,11 @@ from app.schemas.planner_override import (
     PlannerOverrideResponse,
 )
 
-DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
-
-
 def create_planner_override(
     request: PlannerOverrideCreateRequest,
     db: Session,
+    *,
+    user_id: str = DEFAULT_DEV_USER_ID,
 ) -> PlannerOverrideResponse:
     planning_run = _load_planning_run(request.planning_run_id, db)
     _require_non_blank(request.reason, code="OVERRIDE_REQUIRES_REASON", message="Reason is required.")
@@ -52,7 +52,7 @@ def create_planner_override(
             db=db,
         )
 
-    acting_user = _load_acting_user(db)
+    acting_user = load_acting_user(user_id=user_id, db=db)
     override = PlannerOverride(
         id=new_uuid(),
         planning_run_id=planning_run.id,
@@ -132,19 +132,6 @@ def _load_recommendation(planning_run_id: str, recommendation_id: str, db: Sessi
             },
         )
     return recommendation
-
-
-def _load_acting_user(db: Session) -> User:
-    user = db.get(User, DEV_USER_ID)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "code": "DEFAULT_USER_NOT_FOUND",
-                "message": "Default planner user is missing.",
-            },
-        )
-    return user
 
 
 def _ensure_override_target_exists(

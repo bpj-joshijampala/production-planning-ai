@@ -5,6 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.core.auth import EXPORT_ROLES, WRITE_ROLES, require_current_user_roles
 from app.db.session import get_db
 from app.models.output import ReportExport
 from app.models.user import User
@@ -45,7 +46,6 @@ from app.services.planning_runs import (
 from app.services.report_exports import generate_first_build_report_export, list_report_exports
 
 router = APIRouter(prefix="/planning-runs", tags=["planning-runs"])
-DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 logger = logging.getLogger(__name__)
 
 
@@ -53,14 +53,16 @@ logger = logging.getLogger(__name__)
 def create_planning_run_endpoint(
     request: PlanningRunCreateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
 ) -> PlanningRunResponse:
-    return create_planning_run(request=request, db=db)
+    return create_planning_run(request=request, db=db, created_by_user_id=current_user.id)
 
 
 @router.post("/{planning_run_id}/calculate", response_model=PlanningRunResponse)
 def calculate_planning_run_endpoint(
     planning_run_id: str,
     db: Session = Depends(get_db),
+    _current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
 ) -> PlanningRunResponse:
     try:
         return calculate_planning_run_response(planning_run_id=planning_run_id, db=db)
@@ -82,13 +84,14 @@ def create_report_export_endpoint(
     planning_run_id: str,
     request: ReportExportCreateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_roles(*EXPORT_ROLES)),
 ) -> ReportExportResponse:
     try:
         report_export = generate_first_build_report_export(
             planning_run_id=planning_run_id,
             report_type=request.report_type,
             file_format=request.file_format,
-            generated_by_user_id=DEV_USER_ID,
+            generated_by_user_id=current_user.id,
             db=db,
         )
     except HTTPException:

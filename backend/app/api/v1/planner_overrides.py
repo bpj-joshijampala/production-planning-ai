@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
+from app.core.auth import WRITE_ROLES, require_current_user_roles
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.planner_override import (
     PlannerOverrideCreateRequest,
     PlannerOverrideListResponse,
@@ -16,8 +18,9 @@ router = APIRouter(tags=["planner-overrides"])
 def create_planner_override_endpoint(
     request: PlannerOverrideCreateRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
 ) -> PlannerOverrideResponse:
-    return create_planner_override(request=request, db=db)
+    return create_planner_override(request=request, db=db, user_id=current_user.id)
 
 
 @router.get("/planning-runs/{planning_run_id}/planner-overrides", response_model=PlannerOverrideListResponse)

@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
 from app.models.canonical import ComponentStatus, Machine, RoutingOperation, Valve, Vendor
@@ -25,11 +26,15 @@ from app.services.planning_run_metadata import upsert_planning_run_metadata
 from app.services.recommendations import calculate_and_persist_placeholder_recommendations
 from app.services.throughput import calculate_and_persist_throughput_summary
 
-DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 logger = logging.getLogger(__name__)
 
 
-def create_planning_run(request: PlanningRunCreateRequest, db: Session) -> PlanningRunResponse:
+def create_planning_run(
+    request: PlanningRunCreateRequest,
+    db: Session,
+    *,
+    created_by_user_id: str = DEFAULT_DEV_USER_ID,
+) -> PlanningRunResponse:
     upload_batch = _load_upload_for_planning(request.upload_batch_id, db)
     _ensure_upload_can_create_planning_run(upload_batch, db)
 
@@ -40,7 +45,7 @@ def create_planning_run(request: PlanningRunCreateRequest, db: Session) -> Plann
         planning_start_date=_resolve_planning_start_date(request, upload_batch).isoformat(),
         planning_horizon_days=request.planning_horizon_days,
         status="CREATED",
-        created_by_user_id=DEV_USER_ID,
+        created_by_user_id=created_by_user_id,
         created_at=created_at,
     )
 

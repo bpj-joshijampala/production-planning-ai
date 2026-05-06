@@ -8,6 +8,7 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import Settings
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
@@ -22,13 +23,18 @@ from app.schemas.upload import (
     ValidationIssueSummary,
 )
 
-DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 SUPPORTED_EXTENSION = ".xlsx"
 UNSUPPORTED_EXTENSIONS = {".xls", ".xlsm", ".csv", ".tsv"}
 logger = logging.getLogger(__name__)
 
 
-def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBatchResponse:
+def create_upload(
+    file: UploadFile,
+    db: Session,
+    settings: Settings,
+    *,
+    uploaded_by_user_id: str = DEFAULT_DEV_USER_ID,
+) -> UploadBatchResponse:
     original_filename = _safe_filename(file.filename)
     _validate_supported_extension(original_filename)
 
@@ -79,7 +85,7 @@ def create_upload(file: UploadFile, db: Session, settings: Settings) -> UploadBa
         stored_filename=stored_filename,
         file_hash=sha256(content).hexdigest(),
         file_size_bytes=len(content),
-        uploaded_by_user_id=DEV_USER_ID,
+        uploaded_by_user_id=uploaded_by_user_id,
         uploaded_at=uploaded_at,
         status="VALIDATION_FAILED" if blocking_count else "VALIDATED",
         validation_error_count=blocking_count,

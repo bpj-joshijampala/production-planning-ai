@@ -3,8 +3,10 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.core.auth import WRITE_ROLES, require_current_user_roles
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
+from app.models.user import User
 from app.schemas.upload import UploadBatchResponse, ValidationIssuesResponse
 from app.services.uploads import create_upload, get_upload, get_validation_issues
 
@@ -17,9 +19,10 @@ def upload_workbook(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
+    current_user: User = Depends(require_current_user_roles(*WRITE_ROLES)),
 ) -> UploadBatchResponse:
     try:
-        return create_upload(file=file, db=db, settings=settings)
+        return create_upload(file=file, db=db, settings=settings, uploaded_by_user_id=current_user.id)
     except HTTPException:
         raise
     except Exception as exc:

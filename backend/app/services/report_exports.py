@@ -7,6 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import get_settings
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
@@ -34,7 +35,6 @@ ALLOWED_REPORT_TYPES = {
     "A3_PLANNING",
 }
 SUPPORTED_FILE_FORMAT = "XLSX"
-DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 logger = logging.getLogger(__name__)
 
 
@@ -115,7 +115,7 @@ def generate_first_build_report_export(
     report_type: str,
     file_format: str,
     db: Session,
-    generated_by_user_id: str = DEV_USER_ID,
+    generated_by_user_id: str = DEFAULT_DEV_USER_ID,
 ) -> ReportExport:
     normalized_file_format = file_format.strip().upper()
     if normalized_file_format != SUPPORTED_FILE_FORMAT:
