@@ -134,6 +134,7 @@ def test_calculate_and_persist_machine_load_creates_missing_machine_blocker_and_
     assert operation.operation_arrival_date is None
     assert operation.internal_completion_date is None
     assert summary is not None
+    assert summary.total_operation_hours == pytest.approx(4.0)
     assert summary.capacity_hours_per_day == pytest.approx(0.0)
     assert summary.status == "DATA_INCOMPLETE"
     assert "aggregated by machine type" in summary.queue_approximation_warning

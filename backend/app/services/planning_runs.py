@@ -243,7 +243,12 @@ def _load_planning_run(planning_run_id: str, db: Session) -> PlanningRun:
 
 
 def _load_planning_snapshot(planning_run_id: str, db: Session) -> PlanningSnapshot:
-    snapshot = db.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+    snapshot = db.scalar(
+        select(PlanningSnapshot)
+        .where(PlanningSnapshot.planning_run_id == planning_run_id)
+        .order_by(PlanningSnapshot.created_at.desc(), PlanningSnapshot.id.desc())
+        .limit(1)
+    )
     if snapshot is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

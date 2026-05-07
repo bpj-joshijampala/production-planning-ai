@@ -115,6 +115,52 @@ def test_simulate_queue_calculates_wait_completion_and_underutilized_machine_sum
     assert vtl.status == "UNDERUTILIZED"
 
 
+def test_simulate_queue_sort_sequence_matches_simulation_order_for_repeated_components() -> None:
+    planning_input = _planning_input(
+        valves=(
+            _valve("V-100", assembly_date=date(2026, 4, 22), priority="A", value_cr=1.25),
+        ),
+        component_statuses=(
+            _component_status("V-100", 1, "Body", availability_date=date(2026, 4, 21)),
+            _component_status("V-100", 2, "Body", availability_date=date(2026, 4, 21)),
+        ),
+        routing_operations=(
+            _routing("Body", 10, machine_type="HBM", std_total_hrs=8.0),
+            _routing("Body", 20, machine_type="VTL", std_total_hrs=4.0),
+        ),
+        machines=(
+            _machine("HBM-1", "HBM", effective_hours_day=8.0, buffer_days=5.0),
+            _machine("VTL-1", "VTL", effective_hours_day=8.0, buffer_days=5.0),
+        ),
+    )
+
+    component_readiness = calculate_component_readiness(planning_input)
+    valve_readiness = calculate_valve_readiness(planning_input, component_readiness)
+    prioritized_components = calculate_component_priorities(
+        planning_input=planning_input,
+        component_readiness=component_readiness,
+        valve_readiness=valve_readiness,
+    )
+    expansion = expand_routing_operations(
+        planning_input=planning_input,
+        prioritized_components=prioritized_components,
+    )
+
+    result = simulate_queue_and_machine_load(
+        planning_input=planning_input,
+        planned_operations=expansion.planned_operations,
+        existing_flow_blockers=expansion.flow_blockers,
+    )
+
+    assert [(row.component_line_no, row.operation_no, row.sort_sequence) for row in result.planned_operations] == [
+        (1, 10, 1),
+        (2, 10, 2),
+        (1, 20, 3),
+        (2, 20, 4),
+    ]
+    assert [row.sort_sequence for row in result.planned_operations] == [1, 2, 3, 4]
+
+
 def test_simulate_queue_flags_missing_machine_overload_batch_risk_and_extreme_delay() -> None:
     planning_input = _planning_input(
         valves=(
@@ -200,7 +246,7 @@ def test_simulate_queue_flags_missing_machine_overload_batch_risk_and_extreme_de
     assert hbm.status == "OVERLOADED"
 
     lathe = summaries["Lathe"]
-    assert lathe.total_operation_hours == pytest.approx(0.0)
+    assert lathe.total_operation_hours == pytest.approx(4.0)
     assert lathe.capacity_hours_per_day == pytest.approx(0.0)
     assert lathe.load_days == pytest.approx(0.0)
     assert lathe.buffer_days == pytest.approx(0.0)

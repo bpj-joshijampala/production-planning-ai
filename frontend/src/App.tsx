@@ -2662,9 +2662,9 @@ function RecommendationWorkspace({
         <div className="workspace-main">
           <div className="workspace-copy">
             <p className="eyebrow">Recommendations and decisions</p>
-            <h2 id="recommendations-title">Review subcontract and no-feasible-option calls, decide with a reason, and keep the audit trail visible.</h2>
+            <h2 id="recommendations-title">Review planning recommendations, decide with a reason, and keep the audit trail visible.</h2>
             <p className="workspace-intro">
-              Work from the latest calculated planning run, review subcontract and no-feasible-option calls with the numbers attached, save planner decisions with a reason, and keep vendor exposure plus the action log in the same conversation.
+              Work from the latest calculated planning run, review recommendation calls with the numbers attached, save planner decisions with a reason, and keep vendor exposure plus the action log in the same conversation.
             </p>
           </div>
 
@@ -2765,7 +2765,7 @@ function RecommendationWorkspace({
               <h3>What this screen answers</h3>
               <ul>
                 <li>Which operations should go to vendor or stay in-house for now.</li>
-                <li>What numbers justify each subcontract-facing recommendation.</li>
+                <li>What numbers justify each recommendation.</li>
                 <li>Which vendor limits and planner decisions need review.</li>
               </ul>
             </div>
@@ -2782,12 +2782,12 @@ function RecommendationWorkspace({
 
           <section aria-label="Recommendation table" className="validation-section">
             <div className="validation-section-header">
-              <h4>Subcontract recommendations</h4>
+              <h4>Planning recommendations</h4>
               <span>{recommendations.length}</span>
             </div>
 
             {recommendations.length === 0 ? (
-              <p className="empty-state">No subcontract recommendations. Internal plan is within current subcontract rules.</p>
+              <p className="empty-state">No planning recommendations need action for this run.</p>
             ) : (
               <div className="table-wrap">
                 <table>

@@ -214,6 +214,29 @@ def test_inactive_default_user_cannot_create_audit_rows(client: TestClient) -> N
     assert upload_count == 0
 
 
+def test_inactive_default_user_cannot_read_or_download_planning_outputs(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+    export_response = client.post(
+        f"/api/v1/planning-runs/{planning_run_id}/exports",
+        json={"report_type": "MACHINE_LOAD", "file_format": "XLSX"},
+    )
+    assert export_response.status_code == 201
+
+    _set_default_user(role="PLANNER", active=0)
+
+    dashboard_response = client.get(f"/api/v1/planning-runs/{planning_run_id}/dashboard")
+    planning_run_response = client.get(f"/api/v1/planning-runs/{planning_run_id}")
+    export_list_response = client.get(f"/api/v1/planning-runs/{planning_run_id}/exports")
+    export_download_response = client.get(export_response.json()["download_url"])
+
+    for response in (dashboard_response, planning_run_response, export_list_response, export_download_response):
+        assert response.status_code == 403
+        assert response.json()["detail"] == {
+            "code": "ACTING_USER_INACTIVE",
+            "message": "Acting user is inactive and cannot perform this action.",
+        }
+
+
 def _create_calculated_planning_run(client: TestClient) -> str:
     upload_response = client.post(
         "/api/v1/uploads",

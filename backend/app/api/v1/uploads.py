@@ -3,14 +3,18 @@ import logging
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import WRITE_ROLES, require_current_user_roles
+from app.core.auth import VIEW_ROLES, WRITE_ROLES, require_current_user_roles
 from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.upload import UploadBatchResponse, ValidationIssuesResponse
 from app.services.uploads import create_upload, get_upload, get_validation_issues
 
-router = APIRouter(prefix="/uploads", tags=["uploads"])
+router = APIRouter(
+    prefix="/uploads",
+    tags=["uploads"],
+    dependencies=[Depends(require_current_user_roles(*VIEW_ROLES))],
+)
 logger = logging.getLogger(__name__)
 
 

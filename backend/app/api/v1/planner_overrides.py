@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import WRITE_ROLES, require_current_user_roles
+from app.core.auth import VIEW_ROLES, WRITE_ROLES, require_current_user_roles
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.planner_override import (
@@ -11,7 +11,10 @@ from app.schemas.planner_override import (
 )
 from app.services.planner_overrides import create_planner_override, list_planner_overrides
 
-router = APIRouter(tags=["planner-overrides"])
+router = APIRouter(
+    tags=["planner-overrides"],
+    dependencies=[Depends(require_current_user_roles(*VIEW_ROLES))],
+)
 
 
 @router.post("/planner-overrides", response_model=PlannerOverrideResponse, status_code=status.HTTP_201_CREATED)

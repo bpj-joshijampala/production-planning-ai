@@ -59,7 +59,7 @@ def simulate_queue_and_machine_load(
     queue_rows: list[PlannedOperationData] = []
     flow_blockers = list(existing_flow_blockers)
 
-    for row in routed_operations:
+    for simulation_sequence, row in enumerate(routed_operations, start=1):
         machine_capacity = capacity_by_machine_type.get(row.machine_type)
         component_key = (row.valve_id, row.component_line_no)
         has_previous_operation = component_key in previous_completion_by_component
@@ -80,7 +80,7 @@ def simulate_queue_and_machine_load(
                     availability_date=row.availability_date,
                     date_confidence=row.date_confidence,
                     priority_score=row.priority_score,
-                    sort_sequence=row.sort_sequence,
+                    sort_sequence=simulation_sequence,
                     assembly_date=row.assembly_date,
                     dispatch_date=row.dispatch_date,
                     value_cr=row.value_cr,
@@ -128,7 +128,7 @@ def simulate_queue_and_machine_load(
                     availability_date=row.availability_date,
                     date_confidence=row.date_confidence,
                     priority_score=row.priority_score,
-                    sort_sequence=row.sort_sequence,
+                    sort_sequence=simulation_sequence,
                     assembly_date=row.assembly_date,
                     dispatch_date=row.dispatch_date,
                     value_cr=row.value_cr,
@@ -212,7 +212,7 @@ def simulate_queue_and_machine_load(
                 availability_date=row.availability_date,
                 date_confidence=row.date_confidence,
                 priority_score=row.priority_score,
-                sort_sequence=row.sort_sequence,
+                sort_sequence=simulation_sequence,
                 assembly_date=row.assembly_date,
                 dispatch_date=row.dispatch_date,
                 value_cr=row.value_cr,
@@ -249,7 +249,7 @@ def simulate_queue_and_machine_load(
     flow_blockers.extend(_batch_risk_flow_blockers(same_day_arrival_load_days))
 
     return QueueSimulationResult(
-        planned_operations=tuple(sorted(queue_rows, key=lambda row: row.sort_sequence)),
+        planned_operations=tuple(queue_rows),
         machine_load_summaries=summaries,
         flow_blockers=tuple(flow_blockers),
         queue_approximation_warning=MACHINE_TYPE_QUEUE_LIMITATION_WARNING,
@@ -311,12 +311,17 @@ def _machine_load_summaries(
     summaries: list[MachineLoadSummaryData] = []
 
     for machine_type in machine_types:
+        total_operation_hours = sum(
+            row.operation_hours
+            for row in planned_operations
+            if row.machine_type == machine_type
+        )
         machine_capacity = capacity_by_machine_type.get(machine_type)
         if machine_capacity is None or machine_capacity.capacity_hours_per_day <= 0:
             summaries.append(
                 MachineLoadSummaryData(
                     machine_type=machine_type,
-                    total_operation_hours=0.0,
+                    total_operation_hours=total_operation_hours,
                     capacity_hours_per_day=0.0,
                     load_days=0.0,
                     buffer_days=0.0,
@@ -330,11 +335,6 @@ def _machine_load_summaries(
             )
             continue
 
-        total_operation_hours = sum(
-            row.operation_hours
-            for row in planned_operations
-            if row.machine_type == machine_type
-        )
         load_days = total_operation_hours / machine_capacity.capacity_hours_per_day
         overload_flag = load_days > machine_capacity.buffer_days
         overload_days = max(0.0, load_days - machine_capacity.buffer_days)

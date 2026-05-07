@@ -432,8 +432,8 @@ export async function fetchPlanningRunDashboardSummary(
 }
 
 export async function fetchMachineLoad(planningRunId: string): Promise<MachineLoadListResponse> {
-  return getJson<MachineLoadListResponse>(
-    `/api/v1/planning-runs/${planningRunId}/machine-load?sort=load_days&direction=desc&page=1&page_size=100`,
+  return getAllPages<MachineLoadSummaryResponse, MachineLoadListResponse>(
+    (page) => `/api/v1/planning-runs/${planningRunId}/machine-load?sort=load_days&direction=desc&page=${page}&page_size=100`,
   );
 }
 
@@ -441,14 +441,15 @@ export async function fetchMachineQueue(
   planningRunId: string,
   machineType: string,
 ): Promise<QueueOperationListResponse> {
-  return getJson<QueueOperationListResponse>(
-    `/api/v1/planning-runs/${planningRunId}/machine-load/${encodeURIComponent(machineType)}/queue?sort=sort_sequence&direction=asc&page=1&page_size=100`,
+  return getAllPages<QueueOperationResponse, QueueOperationListResponse>(
+    (page) =>
+      `/api/v1/planning-runs/${planningRunId}/machine-load/${encodeURIComponent(machineType)}/queue?sort=sort_sequence&direction=asc&page=${page}&page_size=100`,
   );
 }
 
 export async function fetchValveReadiness(planningRunId: string): Promise<ValveReadinessListResponse> {
-  return getJson<ValveReadinessListResponse>(
-    `/api/v1/planning-runs/${planningRunId}/valve-readiness?sort=assembly_date&direction=asc&page=1&page_size=100`,
+  return getAllPages<ValveReadinessItemResponse, ValveReadinessListResponse>(
+    (page) => `/api/v1/planning-runs/${planningRunId}/valve-readiness?sort=assembly_date&direction=asc&page=${page}&page_size=100`,
   );
 }
 
@@ -456,13 +457,16 @@ export async function fetchComponentStatus(
   planningRunId: string,
   valveId: string,
 ): Promise<ComponentStatusListResponse> {
-  return getJson<ComponentStatusListResponse>(
-    `/api/v1/planning-runs/${planningRunId}/component-status?valve_id=${encodeURIComponent(valveId)}&page=1&page_size=100`,
+  return getAllPages<ComponentStatusItemResponse, ComponentStatusListResponse>(
+    (page) =>
+      `/api/v1/planning-runs/${planningRunId}/component-status?valve_id=${encodeURIComponent(valveId)}&page=${page}&page_size=100`,
   );
 }
 
 export async function fetchAssemblyRisk(planningRunId: string): Promise<AssemblyRiskListResponse> {
-  return getJson<AssemblyRiskListResponse>(`/api/v1/planning-runs/${planningRunId}/assembly-risk?page=1&page_size=100`);
+  return getAllPages<AssemblyRiskItemResponse, AssemblyRiskListResponse>(
+    (page) => `/api/v1/planning-runs/${planningRunId}/assembly-risk?page=${page}&page_size=100`,
+  );
 }
 
 export async function fetchRecommendations(planningRunId: string): Promise<RecommendationListResponse> {

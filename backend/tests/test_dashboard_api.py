@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.core.config import get_settings
+from app.db.session import create_session_factory
 from app.main import create_app
+from app.models.output import FlowBlocker
 from tests.workbook_fixtures import minimal_workbook_rows, workbook_bytes
 
 
@@ -103,8 +105,8 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
     assert incoming_payload["page_size"] == 1
     assert len(incoming_payload["items"]) == 1
     assert incoming_payload["items"][0]["machine_types"] == ["HBM", "VTL"]
-    assert "same_day_arrival_load_days" not in incoming_payload["items"][0]
-    assert "batch_risk_flag" not in incoming_payload["items"][0]
+    assert incoming_payload["items"][0]["same_day_arrival_load_days"] == pytest.approx(2.0)
+    assert incoming_payload["items"][0]["batch_risk_flag"] is True
 
     assert incoming_tied_page_1.status_code == 200
     assert incoming_tied_page_2.status_code == 200
@@ -136,6 +138,52 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
     assert blockers.json()["total"] == 1
     assert blockers.json()["items"][0]["blocker_type"] == "BATCH_RISK"
     assert blockers.json()["items"][0]["severity"] == "INFO"
+
+
+def test_flow_blocker_severity_sort_uses_business_priority(client: TestClient) -> None:
+    planning_run_id = _create_calculated_run(client, _dashboard_workbook_rows())
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        session.add_all(
+            [
+                FlowBlocker(
+                    id="manual-critical-blocker",
+                    planning_run_id=planning_run_id,
+                    planned_operation_id=None,
+                    valve_id=None,
+                    component_line_no=None,
+                    component=None,
+                    operation_name=None,
+                    blocker_type="MISSING_MACHINE",
+                    cause="Missing machine capacity.",
+                    recommended_action="Add active capacity.",
+                    severity="CRITICAL",
+                ),
+                FlowBlocker(
+                    id="manual-warning-blocker",
+                    planning_run_id=planning_run_id,
+                    planned_operation_id=None,
+                    valve_id=None,
+                    component_line_no=None,
+                    component=None,
+                    operation_name=None,
+                    blocker_type="MACHINE_OVERLOAD",
+                    cause="Machine load exceeds buffer.",
+                    recommended_action="Rebalance queue.",
+                    severity="WARNING",
+                ),
+            ]
+        )
+        session.commit()
+
+    blockers = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/flow-blockers",
+        params={"sort": "severity", "direction": "asc", "page": 1, "page_size": 10},
+    )
+
+    assert blockers.status_code == 200
+    assert [row["severity"] for row in blockers.json()["items"]] == ["CRITICAL", "WARNING", "INFO"]
 
 
 def test_component_status_endpoint_returns_next_operation_and_blockers(client: TestClient) -> None:
@@ -202,8 +250,9 @@ def test_recommendation_and_vendor_dashboard_endpoints_return_persisted_outputs(
 
     assert recommendations_default.status_code == 200
     default_payload = recommendations_default.json()
-    assert default_payload["total"] == 2
+    assert default_payload["total"] == 3
     assert {row["recommendation_type"] for row in default_payload["items"]} == {
+        "OK_INTERNAL",
         "SUBCONTRACT",
         "NO_FEASIBLE_OPTION",
     }

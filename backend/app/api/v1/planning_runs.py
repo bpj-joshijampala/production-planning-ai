@@ -5,7 +5,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import EXPORT_ROLES, WRITE_ROLES, require_current_user_roles
+from app.core.auth import EXPORT_ROLES, VIEW_ROLES, WRITE_ROLES, require_current_user_roles
 from app.db.session import get_db
 from app.models.output import ReportExport
 from app.models.user import User
@@ -45,7 +45,11 @@ from app.services.planning_runs import (
 )
 from app.services.report_exports import generate_first_build_report_export, list_report_exports
 
-router = APIRouter(prefix="/planning-runs", tags=["planning-runs"])
+router = APIRouter(
+    prefix="/planning-runs",
+    tags=["planning-runs"],
+    dependencies=[Depends(require_current_user_roles(*VIEW_ROLES))],
+)
 logger = logging.getLogger(__name__)
 
 

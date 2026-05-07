@@ -2,7 +2,7 @@ from collections import defaultdict
 import json
 
 from fastapi import HTTPException, status
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.orm import Session
 
 from app.models.canonical import ComponentStatus, Valve, Vendor
@@ -158,6 +158,8 @@ def list_incoming_load(
                 machine_types=_parse_json_array(row.IncomingLoadItem.machine_types_json),
                 priority_score=float(row.IncomingLoadItem.priority_score),
                 sort_sequence=row.IncomingLoadItem.sort_sequence,
+                same_day_arrival_load_days=row.IncomingLoadItem.same_day_arrival_load_days,
+                batch_risk_flag=bool(row.IncomingLoadItem.batch_risk_flag),
             )
             for row in rows
         ],
@@ -510,12 +512,6 @@ def list_recommendations(
         query = query.where(Valve.customer == customer)
     if recommendation_type:
         query = query.where(Recommendation.recommendation_type == recommendation_type)
-    else:
-        query = query.where(
-            Recommendation.recommendation_type.in_(
-                ("SUBCONTRACT", "BATCH_SUBCONTRACT_OPPORTUNITY", "NO_FEASIBLE_OPTION")
-            )
-        )
     if status_filter:
         query = query.where(Recommendation.status == status_filter)
     query = _apply_sort(
@@ -599,12 +595,18 @@ def list_flow_blockers(
         query = query.where(FlowBlocker.blocker_type == blocker_type)
     if status_filter:
         query = query.where(FlowBlocker.severity == status_filter)
+    severity_order = case(
+        (FlowBlocker.severity == "CRITICAL", 0),
+        (FlowBlocker.severity == "WARNING", 1),
+        (FlowBlocker.severity == "INFO", 2),
+        else_=99,
+    )
     query = _apply_sort(
         query,
         sort=sort,
         direction=direction,
         mapping={
-            "severity": FlowBlocker.severity,
+            "severity": severity_order,
             "blocker_type": FlowBlocker.blocker_type,
             "customer": Valve.customer,
             "component": FlowBlocker.component,

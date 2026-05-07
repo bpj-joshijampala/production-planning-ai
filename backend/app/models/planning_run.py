@@ -34,7 +34,6 @@ class PlanningSnapshot(Base):
     __tablename__ = "planning_snapshots"
     __table_args__ = (
         CheckConstraint("json_valid(snapshot_json)", name="ck_planning_snapshots_snapshot_json"),
-        UniqueConstraint("planning_run_id", name="uq_planning_snapshots_planning_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=new_uuid)

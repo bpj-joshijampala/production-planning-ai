@@ -508,6 +508,19 @@ def test_recalculate_planning_run_with_settings_override_persists_run_settings_a
 
     session_factory = create_session_factory()
     with session_factory() as session:
+        initial_snapshots = list(
+            session.scalars(
+                select(PlanningSnapshot)
+                .where(PlanningSnapshot.planning_run_id == planning_run_id)
+                .order_by(PlanningSnapshot.created_at.asc(), PlanningSnapshot.id.asc())
+            )
+        )
+
+    assert len(initial_snapshots) == 1
+    initial_snapshot_json = initial_snapshots[0].snapshot_json
+    assert '"planning_horizon_days":7' in initial_snapshot_json
+
+    with session_factory() as session:
         planning_run = recalculate_planning_run(
             planning_run_id=planning_run_id,
             db=session,
@@ -518,15 +531,22 @@ def test_recalculate_planning_run_with_settings_override_persists_run_settings_a
 
     with session_factory() as session:
         persisted_run = session.get(PlanningRun, planning_run_id)
-        snapshot = session.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+        snapshots = list(
+            session.scalars(
+                select(PlanningSnapshot)
+                .where(PlanningSnapshot.planning_run_id == planning_run_id)
+                .order_by(PlanningSnapshot.created_at.asc(), PlanningSnapshot.id.asc())
+            )
+        )
         throughput = session.scalar(
             select(ThroughputSummary).where(ThroughputSummary.planning_run_id == planning_run_id)
         )
 
     assert persisted_run is not None
     assert persisted_run.planning_horizon_days == 14
-    assert snapshot is not None
-    assert '"planning_horizon_days":14' in snapshot.snapshot_json
+    assert len(snapshots) == 2
+    assert snapshots[0].snapshot_json == initial_snapshot_json
+    assert '"planning_horizon_days":14' in snapshots[-1].snapshot_json
     assert throughput is not None
     assert throughput.target_throughput_value_cr == pytest.approx(5.0)
 

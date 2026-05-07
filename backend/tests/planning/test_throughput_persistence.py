@@ -105,7 +105,12 @@ def test_calculate_and_persist_throughput_summary_honors_settings_override(clien
 
     with session_factory() as session:
         planning_run = session.get(PlanningRun, planning_run_id)
-        snapshot = session.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+        snapshot = session.scalar(
+            select(PlanningSnapshot)
+            .where(PlanningSnapshot.planning_run_id == planning_run_id)
+            .order_by(PlanningSnapshot.created_at.desc(), PlanningSnapshot.id.desc())
+            .limit(1)
+        )
 
     assert planning_run is not None
     assert planning_run.planning_horizon_days == 14

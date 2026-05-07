@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.models.user import User
 
 DEFAULT_DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
+VIEW_ROLES = ("PLANNER", "HOD", "MANAGEMENT", "ADMIN")
 WRITE_ROLES = ("PLANNER", "ADMIN")
 EXPORT_ROLES = ("PLANNER", "HOD", "MANAGEMENT", "ADMIN")
 

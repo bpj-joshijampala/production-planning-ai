@@ -27,6 +27,8 @@ class IncomingLoadItemResponse(BaseModel):
     machine_types: list[str]
     priority_score: float
     sort_sequence: int
+    same_day_arrival_load_days: float | None
+    batch_risk_flag: bool
 
 
 class IncomingLoadListResponse(BaseModel):

@@ -5,12 +5,17 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app.core.auth import EXPORT_ROLES, require_current_user_roles
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.report_export import ReportExportResponse
 from app.services.report_exports import get_report_export, resolve_report_export_download
 
-router = APIRouter(prefix="/exports", tags=["exports"])
+router = APIRouter(
+    prefix="/exports",
+    tags=["exports"],
+    dependencies=[Depends(require_current_user_roles(*EXPORT_ROLES))],
+)
 
 
 @router.get("/{report_export_id}", response_model=ReportExportResponse)

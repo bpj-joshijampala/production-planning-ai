@@ -1,8 +1,8 @@
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.core.ids import new_uuid
-from app.models.output import FlowBlocker, MachineLoadSummary, PlannedOperation, Recommendation, VendorLoadSummary
+from app.models.output import FlowBlocker, IncomingLoadItem, MachineLoadSummary, PlannedOperation, Recommendation, VendorLoadSummary
 from app.planning.input_loader import PlanningSettingsOverride, load_planning_input
 from app.planning.priority import calculate_component_priorities
 from app.planning.queue import QueueSimulationResult, simulate_queue_and_machine_load
@@ -13,6 +13,7 @@ from app.planning.readiness import (
     calculate_valve_readiness,
 )
 from app.planning.routing import FlowBlockerData, expand_routing_operations
+from app.planning.same_day_arrival import calculate_same_day_arrival_load_days
 from app.services.planning_run_metadata import upsert_planning_run_metadata
 from app.services.valve_readiness import calculate_and_persist_valve_readiness
 
@@ -152,6 +153,11 @@ def calculate_and_persist_machine_load(
                 for row in simulation.flow_blockers
             ]
         )
+        _update_incoming_load_batch_signals(
+            planning_run_id=planning_run_id,
+            db=db,
+            simulation=simulation,
+        )
         valve_readiness = calculate_and_persist_valve_readiness(
             planning_run_id=planning_run_id,
             db=db,
@@ -200,6 +206,49 @@ def calculate_and_persist_machine_load(
         flow_blockers=combined_flow_blockers,
         queue_approximation_warning=simulation.queue_approximation_warning,
     )
+
+
+def _update_incoming_load_batch_signals(
+    *,
+    planning_run_id: str,
+    db: Session,
+    simulation: QueueSimulationResult,
+) -> None:
+    capacity_hours_per_day_by_machine = {
+        row.machine_type: row.capacity_hours_per_day
+        for row in simulation.machine_load_summaries
+        if row.capacity_hours_per_day > 0
+    }
+    same_day_load_days = calculate_same_day_arrival_load_days(
+        arrivals=tuple(
+            (row.operation_arrival_date, row.machine_type, row.operation_hours)
+            for row in simulation.planned_operations
+            if row.operation_arrival_date is not None
+        ),
+        capacity_hours_per_day_by_machine=capacity_hours_per_day_by_machine,
+    )
+    load_days_by_component: dict[ComponentKey, float] = {}
+
+    for row in simulation.planned_operations:
+        if row.operation_arrival_date is None:
+            continue
+        load_days = same_day_load_days.get((row.operation_arrival_date.isoformat(), row.machine_type))
+        if load_days is None:
+            continue
+        key = ComponentKey(valve_id=row.valve_id, component_line_no=row.component_line_no)
+        load_days_by_component[key] = max(load_days_by_component.get(key, 0.0), load_days)
+
+    incoming_rows = list(
+        db.scalars(select(IncomingLoadItem).where(IncomingLoadItem.planning_run_id == planning_run_id))
+    )
+    for incoming_row in incoming_rows:
+        key = ComponentKey(
+            valve_id=incoming_row.valve_id,
+            component_line_no=incoming_row.component_line_no,
+        )
+        load_days = load_days_by_component.get(key)
+        incoming_row.same_day_arrival_load_days = load_days
+        incoming_row.batch_risk_flag = 1 if load_days is not None and load_days > 1.0 else 0
 
 
 def _component_completion_offsets(

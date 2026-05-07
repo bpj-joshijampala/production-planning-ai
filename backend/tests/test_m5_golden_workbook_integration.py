@@ -305,7 +305,12 @@ def _assert_golden_database_outputs(*, planning_run_id: str, upload_batch_id: st
     with session_factory() as session:
         upload = session.get(UploadBatch, upload_batch_id)
         planning_run = session.get(PlanningRun, planning_run_id)
-        snapshot = session.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run_id))
+        snapshot = session.scalar(
+            select(PlanningSnapshot)
+            .where(PlanningSnapshot.planning_run_id == planning_run_id)
+            .order_by(PlanningSnapshot.created_at.desc(), PlanningSnapshot.id.desc())
+            .limit(1)
+        )
 
         assert upload is not None
         assert upload.status == "CALCULATED"
@@ -594,9 +599,10 @@ def _assert_golden_dashboard_outputs(*, client: TestClient, planning_run_id: str
         f"/api/v1/planning-runs/{planning_run_id}/subcontract-recommendations?page=1&page_size=100"
     )
     assert recommendations_response.status_code == 200
-    assert recommendations_response.json()["total"] == 3
+    assert recommendations_response.json()["total"] == 4
     assert {row["recommendation_type"] for row in recommendations_response.json()["items"]} == {
-        "BATCH_SUBCONTRACT_OPPORTUNITY"
+        "BATCH_SUBCONTRACT_OPPORTUNITY",
+        "OK_INTERNAL",
     }
 
     blockers_response = client.get(f"/api/v1/planning-runs/{planning_run_id}/flow-blockers?page=1&page_size=100")

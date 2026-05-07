@@ -865,7 +865,11 @@ describe("App", () => {
         });
       }
 
-      if (url.includes("/api/v1/planning-runs/run-1/machine-load/HBM/queue?")) {
+      if (
+        url.includes(
+          "/api/v1/planning-runs/run-1/machine-load/HBM/queue?sort=sort_sequence&direction=asc&page=1&page_size=100",
+        )
+      ) {
         return createJsonResponse({
           machine_type: "HBM",
           queue_approximation_warning:
@@ -910,8 +914,44 @@ describe("App", () => {
               extreme_delay_flag: false,
             },
           ],
-          total: 2,
+          total: 101,
           page: 1,
+          page_size: 100,
+        });
+      }
+
+      if (
+        url.includes(
+          "/api/v1/planning-runs/run-1/machine-load/HBM/queue?sort=sort_sequence&direction=asc&page=2&page_size=100",
+        )
+      ) {
+        return createJsonResponse({
+          machine_type: "HBM",
+          queue_approximation_warning:
+            "Queue is priority-based and aggregated by machine type. Review before execution.",
+          items: [
+            {
+              id: "op-101",
+              sort_sequence: 101,
+              priority_score: 72,
+              valve_id: "V-900",
+              customer: "Omega",
+              component_line_no: 1,
+              component: "Cover",
+              operation_no: 10,
+              operation_name: "HBM page two op",
+              availability_date: "2026-04-26",
+              date_confidence: "EXPECTED",
+              operation_hours: 6,
+              internal_wait_days: 3,
+              processing_time_days: 0.75,
+              internal_completion_date: "2026-04-30",
+              recommendation_status: "OK_INTERNAL",
+              extreme_delay_flag: false,
+            },
+          ],
+          total: 101,
+          page: 2,
           page_size: 100,
         });
       }
@@ -969,6 +1009,7 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Open HBM queue" })).toBeInTheDocument();
     expect(screen.getByText("HBM roughing")).toBeInTheDocument();
     expect(screen.getByText("HBM finish")).toBeInTheDocument();
+    expect(screen.getByText("HBM page two op")).toBeInTheDocument();
     expect(screen.getByText("HOLD_FOR_PRIORITY_FLOW")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Open VTL queue" }));
@@ -1586,7 +1627,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Recommendations" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Subcontract recommendations")).toBeInTheDocument();
+      expect(screen.getByText("Planning recommendations")).toBeInTheDocument();
     });
 
     const recommendationSection = screen.getByLabelText("Recommendation table");

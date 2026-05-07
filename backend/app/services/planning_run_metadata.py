@@ -28,12 +28,12 @@ def upsert_planning_run_metadata(
         planning_run.planning_horizon_days = planning_settings.planning_horizon_days
 
     timestamp = created_at or utc_now_iso()
-    snapshot = _upsert_planning_snapshot(planning_run=planning_run, db=db, created_at=timestamp)
+    snapshot = _create_planning_snapshot(planning_run=planning_run, db=db, created_at=timestamp)
     _upsert_master_data_version(planning_run_id=planning_run.id, db=db, created_at=timestamp)
     return snapshot
 
 
-def _upsert_planning_snapshot(
+def _create_planning_snapshot(
     *,
     planning_run: PlanningRun,
     db: Session,
@@ -42,19 +42,13 @@ def _upsert_planning_snapshot(
     snapshot_payload = build_planning_snapshot_payload(planning_run=planning_run, db=db)
     snapshot_json = json.dumps(snapshot_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
-    snapshot = db.scalar(select(PlanningSnapshot).where(PlanningSnapshot.planning_run_id == planning_run.id))
-    if snapshot is None:
-        snapshot = PlanningSnapshot(
-            id=new_uuid(),
-            planning_run_id=planning_run.id,
-            snapshot_json=snapshot_json,
-            created_at=created_at,
-        )
-        db.add(snapshot)
-        return snapshot
-
-    snapshot.snapshot_json = snapshot_json
-    snapshot.created_at = created_at
+    snapshot = PlanningSnapshot(
+        id=new_uuid(),
+        planning_run_id=planning_run.id,
+        snapshot_json=snapshot_json,
+        created_at=created_at,
+    )
+    db.add(snapshot)
     return snapshot
 
 
