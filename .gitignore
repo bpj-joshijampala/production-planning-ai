@@ -23,6 +23,10 @@ data/*
 !data/uploads/.gitkeep
 !data/exports/
 !data/exports/.gitkeep
+!data/backups/
+data/backups/*
+!data/backups/.gitkeep
+tmp/
 
 # Local environment
 .env

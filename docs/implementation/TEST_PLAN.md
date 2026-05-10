@@ -187,6 +187,7 @@ Golden workbook tests must verify:
 - flow blockers are produced where rules trigger them
 - recommendations are produced where rules trigger them
 - first usable build exports can be generated
+- pilot workflow covers planner action, HOD machine-load comparison, management metrics, and all V1 exports
 
 Golden workbook expectations must be stored as explicit assertions, not vague smoke tests.
 
@@ -546,6 +547,7 @@ These tests map to PRD release criteria.
 | REL-008 | Planner overrides are append-only and auditable | Override integration and audit tests pass |
 | REL-009 | Excel exports are generated from database records | Export tests pass |
 | REL-010 | Golden workbook test passes | CI or local release run evidence |
+| REL-011 | Pilot workflow passes | `backend/tests/test_m6_pilot_validation.py` and pilot validation notes |
 
 ## 18. Milestone Test Gates
 

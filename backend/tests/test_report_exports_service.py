@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 
 from app.core.config import get_settings
 from app.db.session import create_session_factory
@@ -17,6 +17,7 @@ from app.main import create_app
 from app.models.output import (
     FlowBlocker,
     MachineLoadSummary,
+    PlannerOverride,
     PlannedOperation,
     Recommendation,
     ReportExport,
@@ -513,6 +514,235 @@ def test_generate_first_build_report_export_creates_expected_report_sheet(
             "BATCH_SUBCONTRACT_OPPORTUNITY",
         }
         assert any(row["Batch_Opportunity"] == 1 for row in actual_rows)
+
+
+def test_generate_later_v1_weekly_and_a3_report_exports(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(
+        client,
+        workbook_content=workbook_bytes(sheets=_first_build_export_workbook_rows()),
+    )
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        session.add(
+            PlannerOverride(
+                id="a3-test-override",
+                planning_run_id=planning_run_id,
+                recommendation_id=None,
+                entity_type="RECOMMENDATION",
+                entity_id="manual-a3-action",
+                original_recommendation="SUBCONTRACT",
+                override_decision="ACCEPT",
+                reason="Needed for pilot meeting",
+                remarks="Review with HOD",
+                stale_flag=0,
+                user_id=DEV_USER_ID,
+                created_at="2026-05-01T09:30:00.000000Z",
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        weekly_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="WEEKLY_PLANNING",
+            file_format="XLSX",
+            db=session,
+        )
+        a3_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="A3_PLANNING",
+            file_format="XLSX",
+            db=session,
+        )
+        weekly_file_path = weekly_export.file_path
+        weekly_metadata_json = weekly_export.metadata_json
+        a3_file_path = a3_export.file_path
+
+    weekly_workbook = load_workbook(weekly_file_path, data_only=True)
+    assert weekly_workbook.sheetnames == [
+        "Export_Info",
+        "Weekly_Summary",
+        "Machine_Load",
+        "Valve_Readiness",
+        "Flow_Blockers",
+        "Subcontract_Plan",
+    ]
+    weekly_summary = _worksheet_records(weekly_workbook["Weekly_Summary"])
+    assert weekly_summary == [
+        {
+            "Target_Throughput_Value_Cr": 2.5,
+            "Planned_Throughput_Value_Cr": 1.75,
+            "Throughput_Gap_Cr": 0.75,
+            "Throughput_Risk_Flag": 1,
+            "Overloaded_Machine_Count": 1,
+            "Underutilized_Machine_Count": 1,
+            "Assembly_Risk_Valve_Count": 1,
+            "Flow_Blocker_Count": 2,
+            "Subcontract_Recommendation_Count": 2,
+        }
+    ]
+    subcontract_rows = _worksheet_records(weekly_workbook["Subcontract_Plan"])
+    assert len(subcontract_rows) == 2
+    assert {row["Recommendation_Type"] for row in subcontract_rows} == {"BATCH_SUBCONTRACT_OPPORTUNITY"}
+    weekly_metadata = json.loads(weekly_metadata_json or "{}")
+    assert weekly_metadata["sheet_names"] == weekly_workbook.sheetnames[1:]
+
+    a3_workbook = load_workbook(a3_file_path, data_only=True)
+    assert a3_workbook.sheetnames == ["Export_Info", "A3_Planning"]
+    a3_rows = _worksheet_records(a3_workbook["A3_Planning"])
+    assert [cell.value for cell in a3_workbook["A3_Planning"][1]] == [
+        "Section",
+        "Item",
+        "Value",
+        "Detail",
+        "Recommended_Action",
+    ]
+    sections = {row["Section"] for row in a3_rows}
+    assert {
+        "Export info",
+        "A3 format decision",
+        "Throughput check",
+        "Overloaded machines",
+        "Underutilized machines",
+        "Top flow blockers",
+        "Subcontract actions",
+        "Batch risks",
+        "Assembly risk valves",
+        "Daily execution plan",
+        "Planner overrides",
+    } <= sections
+    format_decision = _row_by(a3_rows, "Section", "A3 format decision")
+    assert format_decision["Value"] == "XLSX"
+    assert "PDF/HTML print views are deferred" in str(format_decision["Detail"])
+    export_info_by_item = {row["Item"]: row["Value"] for row in a3_rows if row["Section"] == "Export info"}
+    assert export_info_by_item["Upload_File"] == "plan.xlsx"
+    assert export_info_by_item["Generated_At"] == a3_export.generated_at
+    assert export_info_by_item["Generated_By"] == "Development Planner"
+    override_row = _row_by(a3_rows, "Section", "Planner overrides")
+    assert override_row["Item"] == "manual-a3-action"
+    assert override_row["Value"] == "ACCEPT"
+    assert "Needed for pilot meeting" in str(override_row["Detail"])
+
+
+def test_a3_report_keeps_meeting_sections_when_no_actions_exist(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(
+        client,
+        workbook_content=workbook_bytes(sheets=_first_build_export_workbook_rows()),
+    )
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        session.execute(delete(FlowBlocker).where(FlowBlocker.planning_run_id == planning_run_id))
+        session.execute(delete(Recommendation).where(Recommendation.planning_run_id == planning_run_id))
+        session.execute(
+            update(MachineLoadSummary)
+            .where(MachineLoadSummary.planning_run_id == planning_run_id)
+            .values(
+                overload_flag=0,
+                overload_days=0.0,
+                underutilized_flag=0,
+                batch_risk_flag=0,
+                status="OK",
+            )
+        )
+        session.execute(
+            update(ValveReadinessSummary)
+            .where(ValveReadinessSummary.planning_run_id == planning_run_id)
+            .values(
+                otd_delay_days=0.0,
+                otd_risk_flag=0,
+                readiness_status="READY",
+                risk_reason=None,
+                valve_flow_imbalance_flag=0,
+            )
+        )
+        session.commit()
+
+    with session_factory() as session:
+        a3_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="A3_PLANNING",
+            file_format="XLSX",
+            db=session,
+        )
+        a3_file_path = a3_export.file_path
+
+    workbook = load_workbook(a3_file_path, data_only=True)
+    a3_rows = _worksheet_records(workbook["A3_Planning"])
+    sections = {row["Section"] for row in a3_rows}
+    assert {
+        "Export info",
+        "A3 format decision",
+        "Throughput check",
+        "Overloaded machines",
+        "Underutilized machines",
+        "Top flow blockers",
+        "Subcontract actions",
+        "Batch risks",
+        "Assembly risk valves",
+        "Daily execution plan",
+        "Planner overrides",
+    } <= sections
+    for empty_section in (
+        "Overloaded machines",
+        "Underutilized machines",
+        "Top flow blockers",
+        "Subcontract actions",
+        "Batch risks",
+        "Assembly risk valves",
+        "Planner overrides",
+    ):
+        placeholder = _row_by(a3_rows, "Section", empty_section)
+        assert placeholder["Item"] == "None"
+        assert placeholder["Detail"]
+
+
+def test_a3_daily_execution_section_sorts_unscheduled_operations_last(client: TestClient) -> None:
+    planning_run_id = _create_calculated_planning_run(
+        client,
+        workbook_content=workbook_bytes(sheets=_first_build_export_workbook_rows()),
+    )
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        operations = list(
+            session.scalars(
+                select(PlannedOperation)
+                .where(PlannedOperation.planning_run_id == planning_run_id)
+                .order_by(PlannedOperation.sort_sequence.asc(), PlannedOperation.id.asc())
+            )
+        )
+        assert len(operations) >= 2
+        unscheduled_operation = operations[0]
+        unscheduled_operation_name = unscheduled_operation.operation_name
+        unscheduled_operation.operation_arrival_offset_days = None
+        unscheduled_operation.operation_arrival_date = None
+        unscheduled_operation.scheduled_start_offset_days = None
+        unscheduled_operation.internal_wait_days = None
+        unscheduled_operation.processing_time_days = None
+        unscheduled_operation.internal_completion_days = None
+        unscheduled_operation.internal_completion_offset_days = None
+        unscheduled_operation.internal_completion_date = None
+        unscheduled_operation.recommendation_status = "DATA_ERROR"
+        session.commit()
+
+    with session_factory() as session:
+        a3_export = generate_first_build_report_export(
+            planning_run_id=planning_run_id,
+            report_type="A3_PLANNING",
+            file_format="XLSX",
+            db=session,
+        )
+        a3_file_path = a3_export.file_path
+
+    workbook = load_workbook(a3_file_path, data_only=True)
+    a3_rows = _worksheet_records(workbook["A3_Planning"])
+    daily_execution_rows = [row for row in a3_rows if row["Section"] == "Daily execution plan"]
+
+    assert len(daily_execution_rows) >= 2
+    assert daily_execution_rows[0]["Item"] != unscheduled_operation_name
+    assert daily_execution_rows[-1]["Item"] == unscheduled_operation_name
 
 
 def test_first_build_report_exports_reflect_current_database_output_values(client: TestClient) -> None:

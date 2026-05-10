@@ -8,8 +8,8 @@ from app.models.user import User
 
 DEFAULT_DEV_USER_ID = "00000000-0000-0000-0000-000000000001"
 VIEW_ROLES = ("PLANNER", "HOD", "MANAGEMENT", "ADMIN")
-WRITE_ROLES = ("PLANNER", "ADMIN")
-EXPORT_ROLES = ("PLANNER", "HOD", "MANAGEMENT", "ADMIN")
+WRITE_ROLES = ("PLANNER",)
+EXPORT_ROLES = ("PLANNER", "HOD", "MANAGEMENT")
 
 
 def load_acting_user(*, user_id: str, db: Session) -> User:
@@ -33,6 +33,22 @@ def load_acting_user(*, user_id: str, db: Session) -> User:
     return user
 
 
+def ensure_user_role(user: User, *, allowed_roles: tuple[str, ...]) -> User:
+    if user.role not in set(allowed_roles):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "ROLE_NOT_ALLOWED",
+                "message": f"Role {user.role} is not allowed to perform this action.",
+            },
+        )
+    return user
+
+
+def load_acting_user_for_roles(*, user_id: str, db: Session, allowed_roles: tuple[str, ...]) -> User:
+    return ensure_user_role(load_acting_user(user_id=user_id, db=db), allowed_roles=allowed_roles)
+
+
 def get_current_user(db: Session = Depends(get_db)) -> User:
     return load_acting_user(user_id=DEFAULT_DEV_USER_ID, db=db)
 
@@ -41,14 +57,6 @@ def require_current_user_roles(*allowed_roles: str) -> Callable[[User], User]:
     allowed_role_set = set(allowed_roles)
 
     def dependency(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in allowed_role_set:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={
-                    "code": "ROLE_NOT_ALLOWED",
-                    "message": f"Role {current_user.role} is not allowed to perform this action.",
-                },
-            )
-        return current_user
+        return ensure_user_role(current_user, allowed_roles=tuple(allowed_role_set))
 
     return dependency

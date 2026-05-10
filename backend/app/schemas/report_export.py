@@ -11,7 +11,7 @@ ReportType = Literal[
     "DAILY_EXECUTION",
     "A3_PLANNING",
 ]
-ReportFileFormat = Literal["XLSX", "PDF", "HTML"]
+ReportFileFormat = Literal["XLSX"]
 
 
 class ReportExportCreateRequest(BaseModel):

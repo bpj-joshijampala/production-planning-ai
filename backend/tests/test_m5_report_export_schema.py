@@ -102,6 +102,21 @@ def test_report_exports_schema_enforces_constraints(migrated_db: Path) -> None:
                     generated_by_user_id, generated_at, metadata_json
                 )
                 values (
+                    'export-4', ?, 'MACHINE_LOAD', 'C:/tmp/machine_load.pdf', 'PDF',
+                    ?, '2026-05-01T00:13:00Z', null
+                )
+                """,
+                (RUN_ID, DEV_USER_ID),
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                insert into report_exports (
+                    id, planning_run_id, report_type, file_path, file_format,
+                    generated_by_user_id, generated_at, metadata_json
+                )
+                values (
                     'export-3', ?, 'MACHINE_LOAD', '   ', 'TXT',
                     ?, '2026-05-01T00:12:00Z', '{bad-json}'
                 )

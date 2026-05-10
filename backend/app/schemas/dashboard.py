@@ -18,6 +18,7 @@ class PlanningRunDashboardSummaryResponse(BaseModel):
 class IncomingLoadItemResponse(BaseModel):
     valve_id: str
     customer: str
+    valve_type: str | None
     component_line_no: int
     component: str
     qty: float

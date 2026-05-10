@@ -8,10 +8,12 @@ from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.core.auth import DEFAULT_DEV_USER_ID
 from app.core.config import Settings
 from app.core.config import get_settings
 from app.main import create_app
 from app.models.upload import ImportStagingRow, RawUploadArtifact, UploadBatch
+from app.models.user import User
 from app.services.uploads import create_upload
 from tests.workbook_fixtures import REQUIRED_SHEETS, minimal_workbook_rows, workbook_bytes
 
@@ -570,6 +572,18 @@ def test_create_upload_removes_stored_file_when_database_commit_fails(tmp_path) 
 class _FailingCommitSession:
     def __init__(self) -> None:
         self.rolled_back = False
+
+    def get(self, model: object, key: str) -> object | None:
+        if model is User and key == DEFAULT_DEV_USER_ID:
+            return User(
+                id=DEFAULT_DEV_USER_ID,
+                username="dev.planner",
+                display_name="Development Planner",
+                role="PLANNER",
+                active=1,
+                created_at="2026-04-21T00:00:00Z",
+            )
+        return None
 
     def add(self, _row: object) -> None:
         return None

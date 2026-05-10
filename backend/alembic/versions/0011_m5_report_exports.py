@@ -35,10 +35,7 @@ def upgrade() -> None:
             ),
             name="ck_report_exports_report_type",
         ),
-        sa.CheckConstraint(
-            "file_format in ('XLSX', 'PDF', 'HTML')",
-            name="ck_report_exports_file_format",
-        ),
+        sa.CheckConstraint("file_format = 'XLSX'", name="ck_report_exports_file_format"),
         sa.CheckConstraint("length(trim(file_path)) > 0", name="ck_report_exports_file_path_not_blank"),
         sa.CheckConstraint("metadata_json is null or json_valid(metadata_json)", name="ck_report_exports_metadata_json"),
         sa.ForeignKeyConstraint(["generated_by_user_id"], ["users.id"]),

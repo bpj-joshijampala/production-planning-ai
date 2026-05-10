@@ -2,7 +2,7 @@
 
 This repository contains the V1 planning cockpit for machine shop scheduling. The first usable build covers workbook upload, validation, planning calculations, dashboards, and first-priority Excel exports.
 
-For the full first usable build workflow, including migrations, sample data, local reset, and upload/export paths, see [First Build Developer Runbook](docs/implementation/FIRST_BUILD_RUNBOOK.md).
+For the full first usable build workflow, including migrations, sample data, local reset, and upload/export paths, see [First Build Developer Runbook](docs/implementation/FIRST_BUILD_RUNBOOK.md). For pilot validation, see [Pilot Validation](docs/implementation/PILOT_VALIDATION.md). For release signoff, see [Release Readiness Checklist](docs/implementation/RELEASE_READINESS.md). For backup, restore, and support troubleshooting, see [Operational Readiness Runbook](docs/implementation/OPERATIONAL_READINESS_RUNBOOK.md).
 
 ## Prerequisites
 
@@ -84,5 +84,6 @@ Runtime files live under `data/` and are not committed:
 - `data/app.sqlite3`
 - `data/uploads/`
 - `data/exports/`
+- `data/backups/`
 
 The application creates required runtime directories on startup. See the first build runbook for safe local reset steps.

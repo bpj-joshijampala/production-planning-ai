@@ -113,11 +113,16 @@ def list_incoming_load(
     sort: str | None,
     direction: str,
     customer: str | None,
+    valve_type: str | None,
+    machine_type: str | None,
+    date_confidence: str | None,
+    availability_from: str | None,
+    availability_to: str | None,
 ) -> IncomingLoadListResponse:
     _ensure_planning_run_exists(planning_run_id, db)
 
     query = (
-        select(IncomingLoadItem, Valve.customer)
+        select(IncomingLoadItem, Valve.customer, Valve.valve_type)
         .join(
             Valve,
             (Valve.planning_run_id == IncomingLoadItem.planning_run_id) & (Valve.valve_id == IncomingLoadItem.valve_id),
@@ -126,6 +131,16 @@ def list_incoming_load(
     )
     if customer:
         query = query.where(Valve.customer == customer)
+    if valve_type:
+        query = query.where(Valve.valve_type == valve_type)
+    if machine_type:
+        query = query.where(IncomingLoadItem.machine_types_json.contains(f'"{machine_type.strip()}"'))
+    if date_confidence:
+        query = query.where(IncomingLoadItem.date_confidence == date_confidence)
+    if availability_from:
+        query = query.where(IncomingLoadItem.availability_date >= availability_from)
+    if availability_to:
+        query = query.where(IncomingLoadItem.availability_date <= availability_to)
 
     query = _apply_sort(
         query,
@@ -138,8 +153,16 @@ def list_incoming_load(
             "valve_id": IncomingLoadItem.valve_id,
             "component": IncomingLoadItem.component,
             "customer": Valve.customer,
+            "valve_type": Valve.valve_type,
+            "machine_type": IncomingLoadItem.machine_types_json,
+            "date_confidence": IncomingLoadItem.date_confidence,
         },
-        default=(IncomingLoadItem.sort_sequence.asc(), IncomingLoadItem.id.asc()),
+        default=(
+            IncomingLoadItem.availability_date.asc(),
+            IncomingLoadItem.priority_score.desc(),
+            IncomingLoadItem.machine_types_json.asc(),
+            IncomingLoadItem.id.asc(),
+        ),
         tie_breakers=(IncomingLoadItem.sort_sequence.asc(), IncomingLoadItem.id.asc()),
     )
     total, rows = _paginate(db, query, page=page, page_size=page_size)
@@ -149,6 +172,7 @@ def list_incoming_load(
             IncomingLoadItemResponse(
                 valve_id=row.IncomingLoadItem.valve_id,
                 customer=row.customer,
+                valve_type=row.valve_type,
                 component_line_no=row.IncomingLoadItem.component_line_no,
                 component=row.IncomingLoadItem.component,
                 qty=float(row.IncomingLoadItem.qty),
@@ -184,6 +208,19 @@ def list_machine_load(
     query = select(MachineLoadSummary).where(MachineLoadSummary.planning_run_id == planning_run_id)
     if status_filter:
         query = query.where(MachineLoadSummary.status == status_filter)
+    extreme_delay_count = (
+        select(func.count())
+        .select_from(PlannedOperation)
+        .where(PlannedOperation.planning_run_id == MachineLoadSummary.planning_run_id)
+        .where(PlannedOperation.machine_type == MachineLoadSummary.machine_type)
+        .where(PlannedOperation.extreme_delay_flag == 1)
+        .correlate(MachineLoadSummary)
+        .scalar_subquery()
+    )
+    overloaded_priority = case((MachineLoadSummary.status == "OVERLOADED", 0), else_=1)
+    extreme_delay_priority = case((extreme_delay_count > 0, 0), else_=1)
+    batch_risk_priority = case((MachineLoadSummary.batch_risk_flag == 1, 0), else_=1)
+    underutilized_priority = case((MachineLoadSummary.status == "UNDERUTILIZED", 1), else_=0)
     query = _apply_sort(
         query,
         sort=sort,
@@ -194,8 +231,18 @@ def list_machine_load(
             "status": MachineLoadSummary.status,
             "overload_days": MachineLoadSummary.overload_days,
             "spare_capacity_days": MachineLoadSummary.spare_capacity_days,
+            "batch_risk": MachineLoadSummary.batch_risk_flag,
+            "underutilized": MachineLoadSummary.underutilized_flag,
         },
-        default=(MachineLoadSummary.load_days.desc(), MachineLoadSummary.machine_type.asc(), MachineLoadSummary.id.asc()),
+        default=(
+            overloaded_priority.asc(),
+            extreme_delay_priority.asc(),
+            batch_risk_priority.asc(),
+            MachineLoadSummary.load_days.desc(),
+            underutilized_priority.asc(),
+            MachineLoadSummary.machine_type.asc(),
+            MachineLoadSummary.id.asc(),
+        ),
         tie_breakers=(MachineLoadSummary.machine_type.asc(), MachineLoadSummary.id.asc()),
     )
     total, rows = _paginate_scalars(db, query, page=page, page_size=page_size)
@@ -218,6 +265,9 @@ def list_machine_queue(
     direction: str,
     customer: str | None,
     status_filter: str | None,
+    date_confidence: str | None,
+    kit_filter: str | None,
+    recommendation_filter: str | None,
 ) -> QueueOperationListResponse:
     _ensure_planning_run_exists(planning_run_id, db)
 
@@ -233,6 +283,12 @@ def list_machine_queue(
             Valve,
             (Valve.planning_run_id == PlannedOperation.planning_run_id) & (Valve.valve_id == PlannedOperation.valve_id),
         )
+        .join(
+            ValveReadinessSummary,
+            (ValveReadinessSummary.planning_run_id == PlannedOperation.planning_run_id)
+            & (ValveReadinessSummary.valve_id == PlannedOperation.valve_id),
+            isouter=True,
+        )
         .where(PlannedOperation.planning_run_id == planning_run_id)
         .where(PlannedOperation.machine_type == machine_type)
     )
@@ -240,6 +296,20 @@ def list_machine_queue(
         query = query.where(Valve.customer == customer)
     if status_filter:
         query = query.where(PlannedOperation.recommendation_status == status_filter)
+    if date_confidence:
+        query = query.where(PlannedOperation.date_confidence == date_confidence)
+    if recommendation_filter:
+        query = query.where(PlannedOperation.recommendation_status == recommendation_filter)
+    if kit_filter:
+        normalized_kit_filter = kit_filter.strip().upper()
+        if normalized_kit_filter == "FULL_KIT":
+            query = query.where(ValveReadinessSummary.full_kit_flag == 1)
+        elif normalized_kit_filter == "NEAR_READY":
+            query = query.where(ValveReadinessSummary.near_ready_flag == 1)
+        elif normalized_kit_filter == "FULL_KIT_OR_NEAR_READY":
+            query = query.where(
+                (ValveReadinessSummary.full_kit_flag == 1) | (ValveReadinessSummary.near_ready_flag == 1)
+            )
     query = _apply_sort(
         query,
         sort=sort,
@@ -250,6 +320,8 @@ def list_machine_queue(
             "availability_date": PlannedOperation.availability_date,
             "completion_date": PlannedOperation.internal_completion_date,
             "customer": Valve.customer,
+            "date_confidence": PlannedOperation.date_confidence,
+            "recommendation": PlannedOperation.recommendation_status,
         },
         default=(
             PlannedOperation.sort_sequence.asc(),
@@ -309,6 +381,14 @@ def list_valve_readiness(
         query = query.where(ValveReadinessSummary.customer == customer)
     if status_filter:
         query = query.where(ValveReadinessSummary.readiness_status == status_filter)
+    status_priority = case(
+        (ValveReadinessSummary.readiness_status == "AT_RISK", 0),
+        (ValveReadinessSummary.readiness_status == "NEAR_READY", 1),
+        (ValveReadinessSummary.readiness_status == "READY", 2),
+        (ValveReadinessSummary.readiness_status == "NOT_READY", 3),
+        (ValveReadinessSummary.readiness_status == "DATA_INCOMPLETE", 4),
+        else_=5,
+    )
     query = _apply_sort(
         query,
         sort=sort,
@@ -322,7 +402,13 @@ def list_valve_readiness(
             "value_cr": ValveReadinessSummary.value_cr,
             "customer": ValveReadinessSummary.customer,
         },
-        default=(ValveReadinessSummary.assembly_date.asc(), ValveReadinessSummary.valve_id.asc(), ValveReadinessSummary.id.asc()),
+        default=(
+            status_priority.asc(),
+            ValveReadinessSummary.assembly_date.asc(),
+            ValveReadinessSummary.value_cr.desc(),
+            ValveReadinessSummary.valve_id.asc(),
+            ValveReadinessSummary.id.asc(),
+        ),
         tie_breakers=(ValveReadinessSummary.valve_id.asc(), ValveReadinessSummary.id.asc()),
     )
     total, rows = _paginate_scalars(db, query, page=page, page_size=page_size)
@@ -506,6 +592,11 @@ def list_recommendations(
             (Valve.planning_run_id == Recommendation.planning_run_id) & (Valve.valve_id == Recommendation.valve_id),
             isouter=True,
         )
+        .join(
+            PlannedOperation,
+            PlannedOperation.id == Recommendation.planned_operation_id,
+            isouter=True,
+        )
         .where(Recommendation.planning_run_id == planning_run_id)
     )
     if customer:
@@ -522,11 +613,20 @@ def list_recommendations(
             "recommendation_type": Recommendation.recommendation_type,
             "status": Recommendation.status,
             "vendor_gain_days": Recommendation.vendor_gain_days,
+            "internal_wait_days": Recommendation.internal_wait_days,
             "internal_completion_days": Recommendation.internal_completion_days,
+            "assembly_date": Valve.assembly_date,
+            "priority_score": PlannedOperation.priority_score,
             "customer": Valve.customer,
             "component": Recommendation.component,
         },
-        default=(Recommendation.created_at.asc(), Recommendation.id.asc()),
+        default=(
+            Recommendation.vendor_gain_days.desc(),
+            Recommendation.internal_wait_days.desc(),
+            Valve.assembly_date.asc(),
+            PlannedOperation.priority_score.desc(),
+            Recommendation.id.asc(),
+        ),
         tie_breakers=(Recommendation.created_at.asc(), Recommendation.id.asc()),
     )
     total, rows = _paginate(db, query, page=page, page_size=page_size)

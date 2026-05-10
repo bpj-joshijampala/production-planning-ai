@@ -73,6 +73,10 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
         f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
         params={"sort": "priority_score", "direction": "desc", "page": 1, "page_size": 1},
     )
+    incoming_default = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
+        params={"page": 1, "page_size": 10},
+    )
     incoming_tied_page_1 = client.get(
         f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
         params={"sort": "availability_date", "direction": "asc", "page": 1, "page_size": 1},
@@ -80,6 +84,26 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
     incoming_tied_page_2 = client.get(
         f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
         params={"sort": "availability_date", "direction": "asc", "page": 2, "page_size": 1},
+    )
+    incoming_customer_filter = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
+        params={"customer": "Beta", "page": 1, "page_size": 10},
+    )
+    incoming_valve_type_filter = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
+        params={"valve_type": "Gate", "page": 1, "page_size": 10},
+    )
+    incoming_machine_type_filter = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
+        params={"machine_type": "VTL", "page": 1, "page_size": 10},
+    )
+    incoming_date_window_filter = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/incoming-load",
+        params={"availability_from": "2026-04-22", "availability_to": "2026-04-23", "page": 1, "page_size": 10},
+    )
+    machine_load_default = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/machine-load",
+        params={"page": 1, "page_size": 10},
     )
     machine_load = client.get(
         f"/api/v1/planning-runs/{planning_run_id}/machine-load",
@@ -89,9 +113,21 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
         f"/api/v1/planning-runs/{planning_run_id}/machine-load/HBM/queue",
         params={"sort": "sort_sequence", "direction": "asc", "page": 1, "page_size": 10},
     )
+    queue_date_confidence = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/machine-load/HBM/queue",
+        params={"date_confidence": "CONFIRMED", "page": 1, "page_size": 10},
+    )
+    queue_kit = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/machine-load/HBM/queue",
+        params={"kit": "FULL_KIT_OR_NEAR_READY", "page": 1, "page_size": 10},
+    )
     readiness = client.get(
         f"/api/v1/planning-runs/{planning_run_id}/valve-readiness",
         params={"status": "AT_RISK"},
+    )
+    readiness_default = client.get(
+        f"/api/v1/planning-runs/{planning_run_id}/valve-readiness",
+        params={"page": 1, "page_size": 10},
     )
     assembly_risk = client.get(f"/api/v1/planning-runs/{planning_run_id}/assembly-risk")
     blockers = client.get(
@@ -105,13 +141,35 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
     assert incoming_payload["page_size"] == 1
     assert len(incoming_payload["items"]) == 1
     assert incoming_payload["items"][0]["machine_types"] == ["HBM", "VTL"]
+    assert incoming_payload["items"][0]["valve_type"] == "Gate"
     assert incoming_payload["items"][0]["same_day_arrival_load_days"] == pytest.approx(2.0)
     assert incoming_payload["items"][0]["batch_risk_flag"] is True
+
+    assert incoming_default.status_code == 200
+    assert [row["valve_id"] for row in incoming_default.json()["items"]] == ["V-100", "V-200"]
 
     assert incoming_tied_page_1.status_code == 200
     assert incoming_tied_page_2.status_code == 200
     assert incoming_tied_page_1.json()["items"][0]["valve_id"] == "V-100"
     assert incoming_tied_page_2.json()["items"][0]["valve_id"] == "V-200"
+
+    assert incoming_customer_filter.status_code == 200
+    assert incoming_customer_filter.json()["total"] == 1
+    assert incoming_customer_filter.json()["items"][0]["customer"] == "Beta"
+
+    assert incoming_valve_type_filter.status_code == 200
+    assert incoming_valve_type_filter.json()["total"] == 1
+    assert incoming_valve_type_filter.json()["items"][0]["valve_type"] == "Gate"
+
+    assert incoming_machine_type_filter.status_code == 200
+    assert incoming_machine_type_filter.json()["total"] == 1
+    assert incoming_machine_type_filter.json()["items"][0]["machine_types"] == ["HBM", "VTL"]
+
+    assert incoming_date_window_filter.status_code == 200
+    assert incoming_date_window_filter.json()["total"] == 0
+
+    assert machine_load_default.status_code == 200
+    assert [row["machine_type"] for row in machine_load_default.json()["items"]] == ["HBM", "VTL"]
 
     assert machine_load.status_code == 200
     assert machine_load.json()["total"] == 2
@@ -126,9 +184,20 @@ def test_dashboard_table_endpoints_support_pagination_sort_and_filters(client: T
         ("Bonnet", "HBM finish"),
     ]
 
+    assert queue_date_confidence.status_code == 200
+    assert queue_date_confidence.json()["total"] == 2
+    assert all(row["date_confidence"] == "CONFIRMED" for row in queue_date_confidence.json()["items"])
+
+    assert queue_kit.status_code == 200
+    assert queue_kit.json()["total"] == 2
+
     assert readiness.status_code == 200
     assert readiness.json()["total"] == 1
     assert readiness.json()["items"][0]["valve_id"] == "V-100"
+
+    assert readiness_default.status_code == 200
+    assert readiness_default.json()["items"][0]["readiness_status"] == "AT_RISK"
+    assert readiness_default.json()["items"][0]["valve_id"] == "V-100"
 
     assert assembly_risk.status_code == 200
     assert assembly_risk.json()["total"] == 1
@@ -305,13 +374,14 @@ def _dashboard_workbook_rows() -> dict[str, list[list[object]]]:
         "Valve_ID",
         "Order_ID",
         "Customer",
+        "Valve_Type",
         "Dispatch_Date",
         "Assembly_Date",
         "Value_Cr",
         "Priority",
     ]
-    rows["Valve_Plan"][1] = ["V-100", "O-100", "Acme", "2026-05-01", "2026-04-22", 1.25, "A"]
-    rows["Valve_Plan"].append(["V-200", "O-200", "Beta", "2026-05-02", "2026-04-24", 0.5, "B"])
+    rows["Valve_Plan"][1] = ["V-100", "O-100", "Acme", "Gate", "2026-05-01", "2026-04-22", 1.25, "A"]
+    rows["Valve_Plan"].append(["V-200", "O-200", "Beta", "Globe", "2026-05-02", "2026-04-24", 0.5, "B"])
 
     rows["Component_Status"][0] = [
         "Valve_ID",

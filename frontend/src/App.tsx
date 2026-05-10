@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchHealth, type HealthResponse } from "./api/health";
+import { fetchCurrentUser, fetchHealth, type CurrentUserResponse, type HealthResponse, type UserRole } from "./api/health";
 import {
   calculatePlanningRun,
   createPlanningRunExport,
@@ -9,6 +9,7 @@ import {
   fetchAssemblyRisk,
   fetchComponentStatus,
   fetchFlowBlockers,
+  fetchIncomingLoad,
   fetchLatestCalculatedPlanningRun,
   fetchMachineLoad,
   fetchMachineQueue,
@@ -21,6 +22,7 @@ import {
   type AssemblyRiskItemResponse,
   type ComponentStatusListResponse,
   type FlowBlockerItemResponse,
+  type IncomingLoadItemResponse,
   type MachineLoadSummaryResponse,
   type PlannerOverrideResponse,
   type PlanningRunDashboardSummaryResponse,
@@ -46,6 +48,11 @@ type ConnectionState =
   | { status: "connected"; health: HealthResponse }
   | { status: "unavailable" };
 
+type CurrentUserState =
+  | { status: "loading" }
+  | { status: "ready"; user: CurrentUserResponse }
+  | { status: "unavailable"; message: string };
+
 type UploadState =
   | { status: "idle" }
   | { status: "uploading" }
@@ -61,7 +68,35 @@ type UploadState =
     }
   | { status: "error"; message: string };
 
-type ImplementedView = "Upload" | "Dashboard" | "Blockers" | "Machine Load" | "Valves" | "Recommendations" | "Reports";
+type ImplementedView =
+  | "Upload"
+  | "Dashboard"
+  | "Incoming Load"
+  | "Blockers"
+  | "Machine Load"
+  | "Valves"
+  | "Recommendations"
+  | "Reports";
+
+type IncomingLoadFilters = {
+  customer: string;
+  valve_type: string;
+  machine_type: string;
+  date_confidence: string;
+  availability_from: string;
+  availability_to: string;
+};
+
+type IncomingLoadViewState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "empty"; message: string }
+  | { status: "error"; message: string }
+  | {
+      status: "ready";
+      planningRun: PlanningRunResponse;
+      incomingLoad: IncomingLoadItemResponse[];
+    };
 
 type QueueState =
   | { status: "idle" }
@@ -81,6 +116,17 @@ type MachineLoadViewState =
       selectedMachineType: string;
       queue: QueueState;
     };
+
+type MachineLoadFilters = {
+  status: string;
+};
+
+type QueueFilters = {
+  status: string;
+  date_confidence: string;
+  kit: string;
+  recommendation: string;
+};
 
 type ComponentStatusState =
   | { status: "idle" }
@@ -116,6 +162,9 @@ type RecommendationViewState =
       vendorLoadMessage: string | null;
       actionLog: PlannerOverrideResponse[];
       actionLogMessage: string | null;
+      staleOverrideCount: number;
+      currentOverrideCount: number;
+      replanningPolicy: string;
     };
 
 type DashboardViewState =
@@ -161,15 +210,27 @@ type RecommendationActionDraft = {
   remarks: string;
 };
 
+type GeneralPlannerActionDraft = {
+  entity_type: "OPERATION" | "VALVE" | "MACHINE" | "VENDOR";
+  entity_id: string;
+  override_decision: "OVERRIDE_PRIORITY" | "FORCE_IN_HOUSE" | "FORCE_VENDOR" | "CHANGE_MACHINE_ASSIGNMENT" | "ADD_REMARKS";
+  reason: string;
+  remarks: string;
+};
+
 const navItems: Array<{ label: string; enabled: boolean; view?: ImplementedView }> = [
   { label: "Upload", enabled: true, view: "Upload" },
   { label: "Dashboard", enabled: true, view: "Dashboard" },
+  { label: "Incoming Load", enabled: true, view: "Incoming Load" },
   { label: "Flow Blockers", enabled: true, view: "Blockers" },
   { label: "Machine Load", enabled: true, view: "Machine Load" },
   { label: "Valves", enabled: true, view: "Valves" },
   { label: "Recommendations", enabled: true, view: "Recommendations" },
   { label: "Reports", enabled: true, view: "Reports" },
 ];
+
+const DEFAULT_REPLANNING_POLICY =
+  "Override-driven replanning is deferred in V1. Planner decisions remain audit records and are not replayed during recalculation.";
 
 const reportDefinitions: Array<{
   reportType: ReportType;
@@ -201,22 +262,58 @@ const reportDefinitions: Array<{
     label: "Daily Execution Plan",
     description: "Queue-ordered internal execution plan with action and delay flags.",
   },
+  {
+    reportType: "WEEKLY_PLANNING",
+    label: "Weekly Planning Report",
+    description: "Weekly summary workbook with throughput, load, readiness, blockers, and subcontract actions.",
+  },
+  {
+    reportType: "A3_PLANNING",
+    label: "A3 Planning Output",
+    description: "Meeting-ready planning conversation sheet with throughput, blockers, actions, risks, and overrides.",
+  },
 ];
 
 function App() {
   const [activeView, setActiveView] = useState<ImplementedView>("Upload");
   const [connection, setConnection] = useState<ConnectionState>({ status: "checking" });
+  const [currentUserState, setCurrentUserState] = useState<CurrentUserState>({ status: "loading" });
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadState, setUploadState] = useState<UploadState>({ status: "idle" });
   const [dashboardViewState, setDashboardViewState] = useState<DashboardViewState>({ status: "idle" });
+  const [incomingLoadViewState, setIncomingLoadViewState] = useState<IncomingLoadViewState>({ status: "idle" });
+  const [incomingLoadFilters, setIncomingLoadFilters] = useState<IncomingLoadFilters>({
+    customer: "",
+    valve_type: "",
+    machine_type: "",
+    date_confidence: "",
+    availability_from: "",
+    availability_to: "",
+  });
   const [blockerViewState, setBlockerViewState] = useState<BlockerViewState>({ status: "idle" });
   const [machineLoadViewState, setMachineLoadViewState] = useState<MachineLoadViewState>({ status: "idle" });
+  const [machineLoadFilters, setMachineLoadFilters] = useState<MachineLoadFilters>({ status: "" });
+  const [queueFilters, setQueueFilters] = useState<QueueFilters>({
+    status: "",
+    date_confidence: "",
+    kit: "",
+    recommendation: "",
+  });
   const [valveViewState, setValveViewState] = useState<ValveViewState>({ status: "idle" });
   const [recommendationViewState, setRecommendationViewState] = useState<RecommendationViewState>({ status: "idle" });
   const [reportsViewState, setReportsViewState] = useState<ReportsViewState>({ status: "idle" });
   const [recommendationActionDraft, setRecommendationActionDraft] = useState<RecommendationActionDraft | null>(null);
+  const [generalPlannerActionDraft, setGeneralPlannerActionDraft] = useState<GeneralPlannerActionDraft>({
+    entity_type: "OPERATION",
+    entity_id: "",
+    override_decision: "ADD_REMARKS",
+    reason: "",
+    remarks: "",
+  });
+  const [generalPlannerActionMessage, setGeneralPlannerActionMessage] = useState<string | null>(null);
   const [recommendationActionMessage, setRecommendationActionMessage] = useState<string | null>(null);
   const [isSubmittingRecommendationAction, setIsSubmittingRecommendationAction] = useState(false);
+  const [isSubmittingGeneralPlannerAction, setIsSubmittingGeneralPlannerAction] = useState(false);
   const [fileMessage, setFileMessage] = useState<string | null>(null);
   const [plannerMessage, setPlannerMessage] = useState<string | null>(null);
   const [isRetryingValidation, setIsRetryingValidation] = useState(false);
@@ -226,6 +323,7 @@ function App() {
   const [isRunningPlanning, setIsRunningPlanning] = useState(false);
   const machineLoadRequestIdRef = useRef(0);
   const queueRequestIdRef = useRef(0);
+  const incomingLoadRequestIdRef = useRef(0);
   const valveViewRequestIdRef = useRef(0);
   const componentStatusRequestIdRef = useRef(0);
   const recommendationViewRequestIdRef = useRef(0);
@@ -238,14 +336,32 @@ function App() {
     let active = true;
 
     fetchHealth()
-      .then((health) => {
+      .then(async (health) => {
         if (active) {
           setConnection({ status: "connected", health });
+        }
+
+        try {
+          const user = await fetchCurrentUser();
+          if (active) {
+            setCurrentUserState({ status: "ready", user });
+          }
+        } catch {
+          if (active) {
+            setCurrentUserState({
+              status: "unavailable",
+              message: "Current user could not be loaded. Write and export actions are disabled.",
+            });
+          }
         }
       })
       .catch(() => {
         if (active) {
           setConnection({ status: "unavailable" });
+          setCurrentUserState({
+            status: "unavailable",
+            message: "Current user could not be loaded. Write and export actions are disabled.",
+          });
         }
       });
 
@@ -260,6 +376,14 @@ function App() {
     }
 
     void loadDashboardWorkspace();
+  }, [activeView, connection.status]);
+
+  useEffect(() => {
+    if (activeView !== "Incoming Load" || connection.status !== "connected") {
+      return;
+    }
+
+    void loadIncomingLoadWorkspace();
   }, [activeView, connection.status]);
 
   useEffect(() => {
@@ -316,11 +440,46 @@ function App() {
     [validation],
   );
   const hasBlockingErrors = blockingIssues.length > 0;
+  const currentUser = currentUserState.status === "ready" ? currentUserState.user : null;
+  const currentUserRole = currentUser?.role ?? null;
+  const canWritePlanning = canRoleWritePlanning(currentUserRole);
+  const canExportReports = canRoleExportReports(currentUserRole);
+  const currentRoleLabel =
+    currentUserState.status === "ready"
+      ? `${currentUserState.user.display_name} (${currentUserState.user.role})`
+      : currentUserState.status === "loading"
+        ? "Loading role"
+        : "Role unavailable";
+  const uploadRoleMessage =
+    currentUserState.status === "loading"
+      ? "Loading current role before upload or calculation."
+      : currentUserState.status === "unavailable"
+        ? currentUserState.message
+        : !canWritePlanning
+          ? "Current role can view planning data but cannot upload or calculate."
+          : null;
+  const reportRoleMessage =
+    currentUserState.status === "loading"
+      ? "Loading current role before report export."
+      : currentUserState.status === "unavailable"
+        ? currentUserState.message
+        : !canExportReports
+          ? "Current role can view reports but cannot generate or download workbooks."
+          : null;
+  const recommendationRoleMessage =
+    currentUserState.status === "loading"
+      ? "Loading current role before planner decisions."
+      : currentUserState.status === "unavailable"
+        ? currentUserState.message
+        : !canWritePlanning
+          ? "Current role can view recommendations but cannot record planner decisions."
+          : null;
   const canCreatePlanningRun =
     uploadState.status === "complete" &&
     uploadState.upload.status === "VALIDATED" &&
     !hasBlockingErrors &&
-    connection.status === "connected";
+    connection.status === "connected" &&
+    canWritePlanning;
   const validationPlaceholderMessage =
     uploadState.status === "uploading"
       ? "Validation details will appear after upload completes."
@@ -338,7 +497,6 @@ function App() {
     planningSetupUploadIdRef.current = latestUpload.id;
     setPlanningStartDate(latestUpload.uploaded_at.slice(0, 10));
     setPlanningHorizonDays(7);
-    setIsPlanningRunSetupOpen(false);
     setPlannerMessage(null);
   }, [latestUpload]);
 
@@ -409,6 +567,44 @@ function App() {
     }
   }
 
+  async function loadIncomingLoadWorkspace(filters: IncomingLoadFilters = incomingLoadFilters) {
+    const incomingLoadRequestId = incomingLoadRequestIdRef.current + 1;
+    incomingLoadRequestIdRef.current = incomingLoadRequestId;
+    setIncomingLoadViewState({ status: "loading" });
+
+    try {
+      const planningRun = await fetchLatestCalculatedPlanningRun();
+      if (incomingLoadRequestId !== incomingLoadRequestIdRef.current) {
+        return;
+      }
+
+      if (!planningRun) {
+        setIncomingLoadViewState({
+          status: "empty",
+          message: "No calculated planning run yet. Finish planning run setup and calculation first.",
+        });
+        return;
+      }
+
+      const incomingLoad = await fetchIncomingLoad(planningRun.id, compactFilters(filters));
+      if (incomingLoadRequestId !== incomingLoadRequestIdRef.current) {
+        return;
+      }
+
+      setIncomingLoadViewState({
+        status: "ready",
+        planningRun,
+        incomingLoad: incomingLoad.items,
+      });
+    } catch (error) {
+      const message =
+        error instanceof ApiError
+          ? error.message
+          : "Incoming load could not be loaded. Retry when the API is ready.";
+      setIncomingLoadViewState({ status: "error", message });
+    }
+  }
+
   async function loadBlockerWorkspace() {
     const blockerViewRequestId = blockerViewRequestIdRef.current + 1;
     blockerViewRequestIdRef.current = blockerViewRequestId;
@@ -456,6 +652,11 @@ function App() {
   }
 
   async function handlePlanningRunSetup() {
+    if (!canWritePlanning) {
+      setPlannerMessage("Current role can view planning data but cannot upload or calculate.");
+      return;
+    }
+
     if (!canCreatePlanningRun || uploadState.status !== "complete") {
       return;
     }
@@ -487,7 +688,7 @@ function App() {
     }
   }
 
-  async function loadMachineLoadWorkspace() {
+  async function loadMachineLoadWorkspace(filters: MachineLoadFilters = machineLoadFilters) {
     const machineLoadRequestId = machineLoadRequestIdRef.current + 1;
     machineLoadRequestIdRef.current = machineLoadRequestId;
     queueRequestIdRef.current += 1;
@@ -506,7 +707,7 @@ function App() {
         return;
       }
 
-      const machineLoad = await fetchMachineLoad(planningRun.id);
+      const machineLoad = await fetchMachineLoad(planningRun.id, compactFilters(filters));
       if (machineLoadRequestId !== machineLoadRequestIdRef.current) {
         return;
       }
@@ -526,7 +727,7 @@ function App() {
         selectedMachineType,
           queue: { status: "loading", machineType: selectedMachineType },
       });
-      await loadMachineQueueDetails(planningRun.id, selectedMachineType);
+      await loadMachineQueueDetails(planningRun.id, selectedMachineType, queueFilters);
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -536,7 +737,11 @@ function App() {
     }
   }
 
-  async function loadMachineQueueDetails(planningRunId: string, machineType: string) {
+  async function loadMachineQueueDetails(
+    planningRunId: string,
+    machineType: string,
+    filters: QueueFilters = queueFilters,
+  ) {
     const queueRequestId = queueRequestIdRef.current + 1;
     queueRequestIdRef.current = queueRequestId;
 
@@ -551,7 +756,7 @@ function App() {
     );
 
     try {
-      const queue = await fetchMachineQueue(planningRunId, machineType);
+      const queue = await fetchMachineQueue(planningRunId, machineType, compactFilters(filters));
       setMachineLoadViewState((latest) =>
         queueRequestId !== queueRequestIdRef.current ||
         latest.status !== "ready" ||
@@ -758,6 +963,20 @@ function App() {
             : actionLogResult.reason instanceof ApiError
               ? actionLogResult.reason.message
               : "Planner action log could not be loaded. Recommendation review is still available.",
+        staleOverrideCount:
+          actionLogResult.status === "fulfilled"
+            ? (actionLogResult.value.stale_override_count ??
+              actionLogResult.value.overrides.filter((row) => row.stale_flag).length)
+            : 0,
+        currentOverrideCount:
+          actionLogResult.status === "fulfilled"
+            ? (actionLogResult.value.current_override_count ??
+              actionLogResult.value.overrides.filter((row) => !row.stale_flag).length)
+            : 0,
+        replanningPolicy:
+          actionLogResult.status === "fulfilled"
+            ? (actionLogResult.value.replanning_policy ?? DEFAULT_REPLANNING_POLICY)
+            : DEFAULT_REPLANNING_POLICY,
       });
     } catch (error) {
       const message =
@@ -812,6 +1031,20 @@ function App() {
     if (reportsViewState.status !== "ready") {
       return;
     }
+    if (!canExportReports) {
+      setReportsViewState((current) =>
+        current.status !== "ready"
+          ? current
+          : {
+              ...current,
+              message: {
+                tone: "error",
+                text: reportRoleMessage ?? "Current user cannot generate or download exports.",
+              },
+            },
+      );
+      return;
+    }
 
     const planningRunId = reportsViewState.planningRun.id;
     setReportsViewState((current) =>
@@ -860,6 +1093,11 @@ function App() {
     recommendationId: string,
     decisionMode: RecommendationActionDraft["decisionMode"],
   ) {
+    if (!canWritePlanning) {
+      setRecommendationActionMessage(recommendationRoleMessage ?? "Current user cannot record planner decisions.");
+      return;
+    }
+
     setRecommendationActionMessage(null);
     setRecommendationActionDraft({
       recommendationId,
@@ -872,6 +1110,10 @@ function App() {
 
   async function submitRecommendationAction() {
     if (recommendationViewState.status !== "ready" || recommendationActionDraft === null) {
+      return;
+    }
+    if (!canWritePlanning) {
+      setRecommendationActionMessage(recommendationRoleMessage ?? "Current user cannot record planner decisions.");
       return;
     }
 
@@ -925,6 +1167,7 @@ function App() {
                     },
               ),
               actionLog: [override, ...current.actionLog],
+              currentOverrideCount: current.currentOverrideCount + 1,
             },
       );
       setRecommendationActionDraft(null);
@@ -937,6 +1180,67 @@ function App() {
     }
   }
 
+  async function submitGeneralPlannerAction() {
+    if (recommendationViewState.status !== "ready") {
+      return;
+    }
+    if (!canWritePlanning) {
+      setGeneralPlannerActionMessage(recommendationRoleMessage ?? "Current user cannot record planner decisions.");
+      return;
+    }
+
+    const entityId = generalPlannerActionDraft.entity_id.trim();
+    const reason = generalPlannerActionDraft.reason.trim();
+    const remarks =
+      generalPlannerActionDraft.remarks.trim().length > 0 ? generalPlannerActionDraft.remarks.trim() : null;
+
+    if (!entityId) {
+      setGeneralPlannerActionMessage("Target ID is required before saving a planner action.");
+      return;
+    }
+    if (!reason) {
+      setGeneralPlannerActionMessage("Reason is required before saving a planner action.");
+      return;
+    }
+
+    const planningRunId = recommendationViewState.planningRun.id;
+    setIsSubmittingGeneralPlannerAction(true);
+    setGeneralPlannerActionMessage(null);
+
+    try {
+      const override = await createPlannerOverride({
+        planning_run_id: planningRunId,
+        entity_type: generalPlannerActionDraft.entity_type,
+        entity_id: entityId,
+        override_decision: generalPlannerActionDraft.override_decision,
+        reason,
+        remarks,
+      });
+      setRecommendationViewState((current) =>
+        current.status !== "ready" || current.planningRun.id !== planningRunId
+          ? current
+          : {
+              ...current,
+              actionLog: [override, ...current.actionLog],
+              currentOverrideCount: current.currentOverrideCount + 1,
+            },
+      );
+      setGeneralPlannerActionDraft({
+        entity_type: "OPERATION",
+        entity_id: "",
+        override_decision: "ADD_REMARKS",
+        reason: "",
+        remarks: "",
+      });
+      setGeneralPlannerActionMessage("Decision recorded.");
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Planner action could not be recorded.";
+      setGeneralPlannerActionMessage(message);
+    } finally {
+      setIsSubmittingGeneralPlannerAction(false);
+    }
+  }
+
   async function handleUploadSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setPlannerMessage(null);
@@ -944,6 +1248,14 @@ function App() {
 
     if (connection.status === "unavailable") {
       setUploadState({ status: "error", message: "Backend unavailable. Start the API and refresh." });
+      return;
+    }
+
+    if (!canWritePlanning) {
+      setUploadState({
+        status: "error",
+        message: uploadRoleMessage ?? "Current user cannot upload or calculate.",
+      });
       return;
     }
 
@@ -1039,6 +1351,7 @@ function App() {
                   <input
                     accept=".xlsx"
                     className="file-input"
+                    disabled={!canWritePlanning}
                     id="upload-workbook"
                     onChange={handleFileSelection}
                     type="file"
@@ -1050,7 +1363,7 @@ function App() {
                 <div className="action-row">
                   <button
                     className="primary-button"
-                    disabled={uploadState.status === "uploading" || connection.status === "unavailable"}
+                    disabled={uploadState.status === "uploading" || connection.status === "unavailable" || !canWritePlanning}
                     type="submit"
                   >
                     {uploadState.status === "uploading" ? "Uploading workbook..." : "Upload workbook"}
@@ -1149,6 +1462,9 @@ function App() {
                   </div>
                 ) : null}
 
+                {uploadRoleMessage ? (
+                  <p className="feedback-banner warning">{uploadRoleMessage}</p>
+                ) : null}
                 <UploadFeedback uploadState={uploadState} />
                 {plannerMessage ? <p className="planner-note">{plannerMessage}</p> : null}
               </form>
@@ -1157,6 +1473,10 @@ function App() {
             <aside className="workspace-side" aria-label="Upload status">
               <StatusStack
                 items={[
+                  {
+                    label: "Role",
+                    value: currentRoleLabel,
+                  },
                   {
                     label: "Backend",
                     value:
@@ -1222,10 +1542,20 @@ function App() {
           connection={connection}
           dashboardViewState={dashboardViewState}
           onOpenBlockers={() => setActiveView("Blockers")}
+          onOpenIncomingLoad={() => setActiveView("Incoming Load")}
           onOpenMachineLoad={() => setActiveView("Machine Load")}
           onOpenRecommendations={() => setActiveView("Recommendations")}
           onOpenValves={() => setActiveView("Valves")}
           onRefresh={() => void loadDashboardWorkspace()}
+        />
+      ) : activeView === "Incoming Load" ? (
+        <IncomingLoadWorkspace
+          connection={connection}
+          filters={incomingLoadFilters}
+          incomingLoadViewState={incomingLoadViewState}
+          onFiltersChange={setIncomingLoadFilters}
+          onRefresh={() => void loadIncomingLoadWorkspace()}
+          onSubmitFilters={() => void loadIncomingLoadWorkspace()}
         />
       ) : activeView === "Blockers" ? (
         <BlockerWorkspace
@@ -1236,10 +1566,19 @@ function App() {
       ) : activeView === "Machine Load" ? (
         <MachineLoadWorkspace
           connection={connection}
+          filters={machineLoadFilters}
           machineLoadViewState={machineLoadViewState}
+          queueFilters={queueFilters}
+          onFiltersChange={setMachineLoadFilters}
+          onQueueFiltersChange={setQueueFilters}
           onOpenQueue={(machineType) =>
             machineLoadViewState.status === "ready"
-              ? void loadMachineQueueDetails(machineLoadViewState.planningRun.id, machineType)
+              ? void loadMachineQueueDetails(machineLoadViewState.planningRun.id, machineType, queueFilters)
+              : undefined
+          }
+          onQueueRefresh={() =>
+            machineLoadViewState.status === "ready"
+              ? void loadMachineQueueDetails(machineLoadViewState.planningRun.id, machineLoadViewState.selectedMachineType, queueFilters)
               : undefined
           }
           onRefresh={() => void loadMachineLoadWorkspace()}
@@ -1257,25 +1596,34 @@ function App() {
         />
       ) : activeView === "Reports" ? (
         <ReportsWorkspace
+          canGenerateReports={canExportReports}
           connection={connection}
+          roleMessage={reportRoleMessage}
           reportsViewState={reportsViewState}
           onGenerateReport={(reportType) => void generateReport(reportType)}
           onRefresh={() => void loadReportsWorkspace()}
         />
       ) : (
         <RecommendationWorkspace
+          canRecordDecisions={canWritePlanning}
           connection={connection}
+          roleMessage={recommendationRoleMessage}
           recommendationActionDraft={recommendationActionDraft}
           recommendationActionMessage={recommendationActionMessage}
+          generalPlannerActionDraft={generalPlannerActionDraft}
+          generalPlannerActionMessage={generalPlannerActionMessage}
           recommendationViewState={recommendationViewState}
+          isSubmittingGeneralPlannerAction={isSubmittingGeneralPlannerAction}
           isSubmittingRecommendationAction={isSubmittingRecommendationAction}
           onActionDraftChange={setRecommendationActionDraft}
           onCancelAction={() => {
             setRecommendationActionDraft(null);
             setRecommendationActionMessage(null);
           }}
+          onGeneralActionDraftChange={setGeneralPlannerActionDraft}
           onRefresh={() => void loadRecommendationWorkspace()}
           onStartAction={startRecommendationAction}
+          onSubmitGeneralAction={() => void submitGeneralPlannerAction()}
           onSubmitAction={() => void submitRecommendationAction()}
         />
       )}
@@ -1350,6 +1698,7 @@ function DashboardWorkspace({
   connection,
   dashboardViewState,
   onRefresh,
+  onOpenIncomingLoad,
   onOpenMachineLoad,
   onOpenValves,
   onOpenRecommendations,
@@ -1358,6 +1707,7 @@ function DashboardWorkspace({
   connection: ConnectionState;
   dashboardViewState: DashboardViewState;
   onRefresh: () => void;
+  onOpenIncomingLoad: () => void;
   onOpenMachineLoad: () => void;
   onOpenValves: () => void;
   onOpenRecommendations: () => void;
@@ -1543,6 +1893,9 @@ function DashboardWorkspace({
             </div>
 
             <div className="action-row">
+              <button className="secondary-button" onClick={onOpenIncomingLoad} type="button">
+                Open incoming load
+              </button>
               <button className="secondary-button" onClick={onOpenBlockers} type="button">
                 Open flow blockers
               </button>
@@ -1555,6 +1908,262 @@ function DashboardWorkspace({
               <button className="secondary-button" onClick={onOpenRecommendations} type="button">
                 Open recommendations
               </button>
+            </div>
+          </section>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function IncomingLoadWorkspace({
+  connection,
+  filters,
+  incomingLoadViewState,
+  onFiltersChange,
+  onRefresh,
+  onSubmitFilters,
+}: {
+  connection: ConnectionState;
+  filters: IncomingLoadFilters;
+  incomingLoadViewState: IncomingLoadViewState;
+  onFiltersChange: (filters: IncomingLoadFilters) => void;
+  onRefresh: () => void;
+  onSubmitFilters: () => void;
+}) {
+  const incomingLoad = incomingLoadViewState.status === "ready" ? incomingLoadViewState.incomingLoad : [];
+  const customerOptions = uniqueSorted(incomingLoad.map((row) => row.customer));
+  const valveTypeOptions = uniqueSorted(incomingLoad.map((row) => row.valve_type ?? ""));
+  const machineOptions = uniqueSorted(incomingLoad.flatMap((row) => row.machine_types));
+
+  return (
+    <>
+      <section className="workspace" aria-labelledby="incoming-load-title">
+        <div className="workspace-main">
+          <div className="workspace-copy">
+            <p className="eyebrow">Incoming load</p>
+            <h2 id="incoming-load-title">Review component arrivals before they turn into queue pressure.</h2>
+            <p className="workspace-intro">
+              Filter the latest calculated planning run by customer, valve type, machine type, confidence, and arrival window.
+            </p>
+          </div>
+
+          <div className="action-row">
+            <button
+              className="primary-button"
+              disabled={incomingLoadViewState.status === "loading" || connection.status !== "connected"}
+              onClick={onRefresh}
+              type="button"
+            >
+              {incomingLoadViewState.status === "loading" ? "Loading incoming load..." : "Refresh incoming load"}
+            </button>
+          </div>
+
+          {connection.status === "unavailable" ? (
+            <p className="feedback-banner error">Backend unavailable. Start the API and refresh.</p>
+          ) : null}
+
+          {incomingLoadViewState.status === "loading" ? (
+            <div aria-live="polite" className="progress-band" role="status">
+              <span>Loading incoming load...</span>
+              <div aria-hidden="true" className="progress-track">
+                <div className="progress-indicator" />
+              </div>
+            </div>
+          ) : null}
+
+          {incomingLoadViewState.status === "error" ? (
+            <p className="feedback-banner error">{incomingLoadViewState.message}</p>
+          ) : null}
+
+          {incomingLoadViewState.status === "empty" ? (
+            <p className="feedback-banner warning">{incomingLoadViewState.message}</p>
+          ) : null}
+        </div>
+
+        <aside className="workspace-side" aria-label="Incoming load status">
+          <StatusStack
+            items={[
+              {
+                label: "Planning run",
+                value:
+                  incomingLoadViewState.status === "ready"
+                    ? incomingLoadViewState.planningRun.id
+                    : incomingLoadViewState.status === "loading"
+                      ? "Loading latest calculated run"
+                      : "No calculated run loaded",
+              },
+              {
+                label: "Rows",
+                value: incomingLoadViewState.status === "ready" ? String(incomingLoad.length) : "-",
+              },
+              {
+                label: "Batch risks",
+                value:
+                  incomingLoadViewState.status === "ready"
+                    ? String(incomingLoad.filter((row) => row.batch_risk_flag).length)
+                    : "-",
+              },
+            ]}
+          />
+        </aside>
+      </section>
+
+      {incomingLoadViewState.status === "ready" ? (
+        <section className="validation-layout" aria-labelledby="incoming-load-results-title">
+          <div className="validation-header">
+            <p className="eyebrow">Arrival review</p>
+            <h3 id="incoming-load-results-title">Scan the arrivals that feed machine queues and batch risk.</h3>
+          </div>
+
+          <section aria-label="Incoming load filters" className="validation-section">
+            <div className="validation-section-header">
+              <h4>Filters</h4>
+              <span>{incomingLoad.length}</span>
+            </div>
+            <div className="action-form-grid">
+              <label className="field-label">
+                Customer
+                <select
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, customer: event.target.value })}
+                  value={filters.customer}
+                >
+                  <option value="">All</option>
+                  {customerOptions.map((customer) => (
+                    <option key={customer} value={customer}>
+                      {customer}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Valve type
+                <select
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, valve_type: event.target.value })}
+                  value={filters.valve_type}
+                >
+                  <option value="">All</option>
+                  {valveTypeOptions.map((valveType) => (
+                    <option key={valveType} value={valveType}>
+                      {valveType}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Machine type
+                <select
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, machine_type: event.target.value })}
+                  value={filters.machine_type}
+                >
+                  <option value="">All</option>
+                  {machineOptions.map((machineType) => (
+                    <option key={machineType} value={machineType}>
+                      {machineType}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                Date confidence
+                <select
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, date_confidence: event.target.value })}
+                  value={filters.date_confidence}
+                >
+                  <option value="">All</option>
+                  <option value="CONFIRMED">CONFIRMED</option>
+                  <option value="EXPECTED">EXPECTED</option>
+                  <option value="TENTATIVE">TENTATIVE</option>
+                </select>
+              </label>
+              <label className="field-label">
+                From
+                <input
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, availability_from: event.target.value })}
+                  type="date"
+                  value={filters.availability_from}
+                />
+              </label>
+              <label className="field-label">
+                To
+                <input
+                  className="text-input"
+                  onChange={(event) => onFiltersChange({ ...filters, availability_to: event.target.value })}
+                  type="date"
+                  value={filters.availability_to}
+                />
+              </label>
+            </div>
+            <div className="action-row">
+              <button className="primary-button" onClick={onSubmitFilters} type="button">
+                Apply filters
+              </button>
+              <button
+                className="secondary-button"
+                onClick={() =>
+                  onFiltersChange({
+                    customer: "",
+                    valve_type: "",
+                    machine_type: "",
+                    date_confidence: "",
+                    availability_from: "",
+                    availability_to: "",
+                  })
+                }
+                type="button"
+              >
+                Clear filters
+              </button>
+            </div>
+          </section>
+
+          <section aria-label="Incoming load table" className="validation-section">
+            <div className="validation-section-header">
+              <h4>Incoming load</h4>
+              <span>{incomingLoad.length}</span>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Availability date</th>
+                    <th>Priority score</th>
+                    <th>Valve</th>
+                    <th>Customer</th>
+                    <th>Valve type</th>
+                    <th>Component</th>
+                    <th>Qty</th>
+                    <th>Machine types</th>
+                    <th>Date confidence</th>
+                    <th>Ready</th>
+                    <th>Same-day load</th>
+                    <th>Batch risk</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {incomingLoad.map((row) => (
+                    <tr key={`${row.valve_id}-${row.component_line_no}`}>
+                      <td>{row.availability_date}</td>
+                      <td>{formatDecimal(row.priority_score)}</td>
+                      <td>{row.valve_id}</td>
+                      <td>{row.customer}</td>
+                      <td>{row.valve_type ?? "-"}</td>
+                      <td>{row.component}</td>
+                      <td>{formatDecimal(row.qty)}</td>
+                      <td>{row.machine_types.join(", ") || "-"}</td>
+                      <td>{row.date_confidence}</td>
+                      <td>{row.current_ready_flag ? "Yes" : "No"}</td>
+                      <td>{formatNullableDecimal(row.same_day_arrival_load_days)}</td>
+                      <td>{row.batch_risk_flag ? "Yes" : "No"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         </section>
@@ -1743,12 +2352,16 @@ function BlockerWorkspace({
 }
 
 function ReportsWorkspace({
+  canGenerateReports,
   connection,
+  roleMessage,
   reportsViewState,
   onGenerateReport,
   onRefresh,
 }: {
+  canGenerateReports: boolean;
   connection: ConnectionState;
+  roleMessage: string | null;
   reportsViewState: ReportsViewState;
   onGenerateReport: (reportType: ReportType) => void;
   onRefresh: () => void;
@@ -1764,10 +2377,10 @@ function ReportsWorkspace({
         <div className="workspace-main">
           <div className="workspace-copy">
             <p className="eyebrow">Reports</p>
-            <h2 id="reports-title">Generate the first-build planning workbooks straight from the latest calculated run.</h2>
+            <h2 id="reports-title">Generate V1 planning workbooks straight from the latest calculated run.</h2>
             <p className="workspace-intro">
               Use these exports for machine-load review, vendor planning, valve readiness discussions, blocker cleanup, and
-              daily execution handoff.
+              daily or weekly planning conversations.
             </p>
           </div>
 
@@ -1795,6 +2408,9 @@ function ReportsWorkspace({
           ) : null}
           {reportsViewState.status === "error" ? <p className="feedback-banner error">{reportsViewState.message}</p> : null}
           {reportsViewState.status === "empty" ? <p className="feedback-banner warning">{reportsViewState.message}</p> : null}
+          {roleMessage ? (
+            <p className="feedback-banner warning">{roleMessage}</p>
+          ) : null}
           {message ? <p className={`feedback-banner ${message.tone}`}>{message.text}</p> : null}
         </div>
 
@@ -1860,7 +2476,7 @@ function ReportsWorkspace({
       {reportsViewState.status === "ready" ? (
         <section className="validation-layout" aria-labelledby="reports-results-title">
           <div className="validation-header">
-            <p className="eyebrow">First usable build exports</p>
+            <p className="eyebrow">V1 planning exports</p>
             <h3 id="reports-results-title">Generate the report you need, then download the workbook from the result card.</h3>
           </div>
 
@@ -1878,16 +2494,20 @@ function ReportsWorkspace({
                   <div className="action-row">
                     <button
                       className="primary-button"
-                      disabled={generatingReportType !== null}
+                      disabled={generatingReportType !== null || !canGenerateReports}
                       onClick={() => onGenerateReport(report.reportType)}
                       type="button"
                     >
                       {isGenerating ? "Generating..." : "Generate workbook"}
                     </button>
-                    {exportRecord ? (
+                    {exportRecord && canGenerateReports ? (
                       <a className="secondary-button link-button" href={exportRecord.download_url} rel="noreferrer" target="_blank">
                         Download
                       </a>
+                    ) : exportRecord ? (
+                      <button className="secondary-button" disabled type="button">
+                        Download
+                      </button>
                     ) : null}
                   </div>
                   {exportRecord ? (
@@ -1984,15 +2604,23 @@ function reportLabel(reportType: ReportType) {
 
 function latestExportsByReportType(exports: ReportExportResponse[]) {
   return exports.reduce<Partial<Record<ReportType, ReportExportResponse>>>((latestExports, reportExport) => {
-    if (isFirstBuildReportType(reportExport.report_type)) {
+    if (isV1ReportType(reportExport.report_type)) {
       latestExports[reportExport.report_type] = reportExport;
     }
     return latestExports;
   }, {});
 }
 
-function isFirstBuildReportType(reportType: string): reportType is ReportType {
+function isV1ReportType(reportType: string): reportType is ReportType {
   return reportDefinitions.some((report) => report.reportType === reportType);
+}
+
+function canRoleWritePlanning(role: UserRole | null) {
+  return role === "PLANNER";
+}
+
+function canRoleExportReports(role: UserRole | null) {
+  return role === "PLANNER" || role === "HOD" || role === "MANAGEMENT";
 }
 
 function ConnectionBadge({ connection }: { connection: ConnectionState }) {
@@ -2037,12 +2665,22 @@ function StatusStack({ items }: { items: Array<{ label: string; value: string }>
 
 function MachineLoadWorkspace({
   connection,
+  filters,
   machineLoadViewState,
+  queueFilters,
+  onFiltersChange,
+  onQueueFiltersChange,
+  onQueueRefresh,
   onRefresh,
   onOpenQueue,
 }: {
   connection: ConnectionState;
+  filters: MachineLoadFilters;
   machineLoadViewState: MachineLoadViewState;
+  queueFilters: QueueFilters;
+  onFiltersChange: (filters: MachineLoadFilters) => void;
+  onQueueFiltersChange: (filters: QueueFilters) => void;
+  onQueueRefresh: () => void;
   onRefresh: () => void;
   onOpenQueue: (machineType: string) => void;
 }) {
@@ -2070,6 +2708,20 @@ function MachineLoadWorkspace({
           </div>
 
           <div className="action-row">
+            <label className="field-label compact-field">
+              Status
+              <select
+                className="text-input"
+                onChange={(event) => onFiltersChange({ status: event.target.value })}
+                value={filters.status}
+              >
+                <option value="">All</option>
+                <option value="OVERLOADED">OVERLOADED</option>
+                <option value="OK">OK</option>
+                <option value="UNDERUTILIZED">UNDERUTILIZED</option>
+                <option value="DATA_INCOMPLETE">DATA_INCOMPLETE</option>
+              </select>
+            </label>
             <button
               className="primary-button"
               disabled={machineLoadViewState.status === "loading" || connection.status !== "connected"}
@@ -2235,6 +2887,70 @@ function MachineLoadWorkspace({
                       ? "Retry needed"
                       : "0"}
               </span>
+            </div>
+
+            <div className="action-form-grid compact-controls">
+              <label className="field-label">
+                Status
+                <select
+                  className="text-input"
+                  onChange={(event) => onQueueFiltersChange({ ...queueFilters, status: event.target.value })}
+                  value={queueFilters.status}
+                >
+                  <option value="">All</option>
+                  <option value="OK_INTERNAL">OK_INTERNAL</option>
+                  <option value="HOLD_FOR_PRIORITY_FLOW">HOLD_FOR_PRIORITY_FLOW</option>
+                  <option value="USE_ALTERNATE">USE_ALTERNATE</option>
+                  <option value="SUBCONTRACT">SUBCONTRACT</option>
+                  <option value="BATCH_RISK">BATCH_RISK</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Date confidence
+                <select
+                  className="text-input"
+                  onChange={(event) => onQueueFiltersChange({ ...queueFilters, date_confidence: event.target.value })}
+                  value={queueFilters.date_confidence}
+                >
+                  <option value="">All</option>
+                  <option value="CONFIRMED">CONFIRMED</option>
+                  <option value="EXPECTED">EXPECTED</option>
+                  <option value="TENTATIVE">TENTATIVE</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Kit
+                <select
+                  className="text-input"
+                  onChange={(event) => onQueueFiltersChange({ ...queueFilters, kit: event.target.value })}
+                  value={queueFilters.kit}
+                >
+                  <option value="">All</option>
+                  <option value="FULL_KIT">Full kit</option>
+                  <option value="NEAR_READY">Near ready</option>
+                  <option value="FULL_KIT_OR_NEAR_READY">Full kit or near ready</option>
+                </select>
+              </label>
+              <label className="field-label">
+                Recommendation
+                <select
+                  className="text-input"
+                  onChange={(event) => onQueueFiltersChange({ ...queueFilters, recommendation: event.target.value })}
+                  value={queueFilters.recommendation}
+                >
+                  <option value="">All</option>
+                  <option value="OK_INTERNAL">OK_INTERNAL</option>
+                  <option value="HOLD_FOR_PRIORITY_FLOW">HOLD_FOR_PRIORITY_FLOW</option>
+                  <option value="USE_ALTERNATE">USE_ALTERNATE</option>
+                  <option value="SUBCONTRACT">SUBCONTRACT</option>
+                  <option value="NO_FEASIBLE_OPTION">NO_FEASIBLE_OPTION</option>
+                </select>
+              </label>
+            </div>
+            <div className="action-row">
+              <button className="secondary-button" disabled={selectedMachineType === null} onClick={onQueueRefresh} type="button">
+                Apply queue filters
+              </button>
             </div>
 
             {queueState.status === "loading" ? (
@@ -2621,36 +3337,56 @@ function ValveWorkspace({
 }
 
 function RecommendationWorkspace({
+  canRecordDecisions,
   connection,
+  roleMessage,
   recommendationViewState,
   recommendationActionDraft,
   recommendationActionMessage,
+  generalPlannerActionDraft,
+  generalPlannerActionMessage,
   isSubmittingRecommendationAction,
+  isSubmittingGeneralPlannerAction,
   onRefresh,
   onStartAction,
   onActionDraftChange,
+  onGeneralActionDraftChange,
   onCancelAction,
   onSubmitAction,
+  onSubmitGeneralAction,
 }: {
+  canRecordDecisions: boolean;
   connection: ConnectionState;
+  roleMessage: string | null;
   recommendationViewState: RecommendationViewState;
   recommendationActionDraft: RecommendationActionDraft | null;
   recommendationActionMessage: string | null;
+  generalPlannerActionDraft: GeneralPlannerActionDraft;
+  generalPlannerActionMessage: string | null;
   isSubmittingRecommendationAction: boolean;
+  isSubmittingGeneralPlannerAction: boolean;
   onRefresh: () => void;
   onStartAction: (
     recommendationId: string,
     decisionMode: RecommendationActionDraft["decisionMode"],
   ) => void;
   onActionDraftChange: (draft: RecommendationActionDraft | null) => void;
+  onGeneralActionDraftChange: (draft: GeneralPlannerActionDraft) => void;
   onCancelAction: () => void;
   onSubmitAction: () => void;
+  onSubmitGeneralAction: () => void;
 }) {
   const recommendations = recommendationViewState.status === "ready" ? recommendationViewState.recommendations : [];
   const vendorLoad = recommendationViewState.status === "ready" ? recommendationViewState.vendorLoad : [];
   const vendorLoadMessage = recommendationViewState.status === "ready" ? recommendationViewState.vendorLoadMessage : null;
   const actionLog = recommendationViewState.status === "ready" ? recommendationViewState.actionLog : [];
   const actionLogMessage = recommendationViewState.status === "ready" ? recommendationViewState.actionLogMessage : null;
+  const staleActionLogCount =
+    recommendationViewState.status === "ready"
+      ? recommendationViewState.staleOverrideCount
+      : actionLog.filter((row) => row.stale_flag).length;
+  const replanningPolicy =
+    recommendationViewState.status === "ready" ? recommendationViewState.replanningPolicy : DEFAULT_REPLANNING_POLICY;
   const selectedRecommendation =
     recommendationViewState.status === "ready" && recommendationActionDraft !== null
       ? recommendationViewState.recommendations.find((row) => row.id === recommendationActionDraft.recommendationId) ?? null
@@ -2702,6 +3438,9 @@ function RecommendationWorkspace({
 
           {recommendationViewState.status === "empty" ? (
             <p className="feedback-banner warning">{recommendationViewState.message}</p>
+          ) : null}
+          {roleMessage ? (
+            <p className="feedback-banner warning">{roleMessage}</p>
           ) : null}
         </div>
 
@@ -2832,7 +3571,7 @@ function RecommendationWorkspace({
                           <div className="table-actions">
                             <button
                               className="table-button"
-                              disabled={isSubmittingRecommendationAction}
+                              disabled={isSubmittingRecommendationAction || !canRecordDecisions}
                               onClick={() => onStartAction(row.id, "ACCEPT")}
                               type="button"
                             >
@@ -2840,7 +3579,7 @@ function RecommendationWorkspace({
                             </button>
                             <button
                               className="table-button"
-                              disabled={isSubmittingRecommendationAction}
+                              disabled={isSubmittingRecommendationAction || !canRecordDecisions}
                               onClick={() => onStartAction(row.id, "REJECT")}
                               type="button"
                             >
@@ -2848,7 +3587,7 @@ function RecommendationWorkspace({
                             </button>
                             <button
                               className="table-button"
-                              disabled={isSubmittingRecommendationAction}
+                              disabled={isSubmittingRecommendationAction || !canRecordDecisions}
                               onClick={() => onStartAction(row.id, "OVERRIDE")}
                               type="button"
                             >
@@ -2952,7 +3691,7 @@ function RecommendationWorkspace({
                 <div className="action-row">
                   <button
                     className="primary-button"
-                    disabled={isSubmittingRecommendationAction}
+                    disabled={isSubmittingRecommendationAction || !canRecordDecisions}
                     onClick={onSubmitAction}
                     type="button"
                   >
@@ -3027,9 +3766,119 @@ function RecommendationWorkspace({
 
             {actionLogMessage ? <p className="feedback-banner warning">{actionLogMessage}</p> : null}
 
+            {!actionLogMessage && staleActionLogCount > 0 ? (
+              <p className="feedback-banner warning">
+                {staleActionLogCount} planner decision{staleActionLogCount === 1 ? "" : "s"} became stale after
+                recalculation. {replanningPolicy}
+              </p>
+            ) : null}
+
             {!actionLogMessage && actionLog.length === 0 ? (
               <p className="empty-state">No planner decisions recorded for this planning run yet.</p>
             ) : null}
+
+            <div className="action-form">
+              <div className="validation-section-header">
+                <h4>Planner action</h4>
+                <span>Audit</span>
+              </div>
+              <div className="action-form-grid">
+                <label className="field-label">
+                  Entity
+                  <select
+                    className="text-input"
+                    disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                    onChange={(event) =>
+                      onGeneralActionDraftChange({
+                        ...generalPlannerActionDraft,
+                        entity_type: event.target.value as GeneralPlannerActionDraft["entity_type"],
+                      })
+                    }
+                    value={generalPlannerActionDraft.entity_type}
+                  >
+                    <option value="OPERATION">Operation</option>
+                    <option value="VALVE">Valve</option>
+                    <option value="MACHINE">Machine</option>
+                    <option value="VENDOR">Vendor</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  Target ID
+                  <input
+                    className="text-input"
+                    disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                    onChange={(event) =>
+                      onGeneralActionDraftChange({ ...generalPlannerActionDraft, entity_id: event.target.value })
+                    }
+                    type="text"
+                    value={generalPlannerActionDraft.entity_id}
+                  />
+                </label>
+                <label className="field-label">
+                  Decision
+                  <select
+                    className="text-input"
+                    disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                    onChange={(event) =>
+                      onGeneralActionDraftChange({
+                        ...generalPlannerActionDraft,
+                        override_decision: event.target.value as GeneralPlannerActionDraft["override_decision"],
+                      })
+                    }
+                    value={generalPlannerActionDraft.override_decision}
+                  >
+                    <option value="ADD_REMARKS">Add remarks</option>
+                    <option value="OVERRIDE_PRIORITY">Override priority</option>
+                    <option value="FORCE_IN_HOUSE">Force in-house</option>
+                    <option value="FORCE_VENDOR">Force vendor</option>
+                    <option value="CHANGE_MACHINE_ASSIGNMENT">Change machine assignment</option>
+                  </select>
+                </label>
+                <label className="field-label">
+                  Reason
+                  <input
+                    className="text-input"
+                    disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                    onChange={(event) =>
+                      onGeneralActionDraftChange({ ...generalPlannerActionDraft, reason: event.target.value })
+                    }
+                    type="text"
+                    value={generalPlannerActionDraft.reason}
+                  />
+                </label>
+                <label className="field-label field-span-2">
+                  Remarks
+                  <textarea
+                    className="text-area"
+                    disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                    onChange={(event) =>
+                      onGeneralActionDraftChange({ ...generalPlannerActionDraft, remarks: event.target.value })
+                    }
+                    rows={3}
+                    value={generalPlannerActionDraft.remarks}
+                  />
+                </label>
+              </div>
+              {generalPlannerActionMessage ? (
+                <p
+                  className={`feedback-banner ${
+                    generalPlannerActionMessage === "Decision recorded." ? "success" : "warning"
+                  }`}
+                >
+                  {generalPlannerActionMessage}
+                </p>
+              ) : null}
+              <div className="action-row">
+                <button
+                  className="primary-button"
+                  disabled={isSubmittingGeneralPlannerAction || !canRecordDecisions}
+                  onClick={onSubmitGeneralAction}
+                  type="button"
+                >
+                  {isSubmittingGeneralPlannerAction ? "Saving decision..." : "Save planner action"}
+                </button>
+              </div>
+            </div>
 
             {actionLog.length > 0 ? (
               <div className="table-wrap">
@@ -3060,6 +3909,11 @@ function RecommendationWorkspace({
                           <span className={`status-pill status-${row.stale_flag ? "warning" : "ready"}`}>
                             {row.stale_flag ? "STALE" : "CURRENT"}
                           </span>
+                          {row.stale_flag ? (
+                            <small className="cell-note">
+                              {row.stale_reason ?? "Target is stale or orphaned after recalculation."}
+                            </small>
+                          ) : null}
                         </td>
                       </tr>
                     ))}
@@ -3109,6 +3963,23 @@ function sortFlowBlockers(blockers: FlowBlockerItemResponse[]) {
 
     return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id);
   });
+}
+
+function compactFilters(filters: Record<string, string>): Record<string, string> {
+  const compacted: Record<string, string> = {};
+  for (const [key, value] of Object.entries(filters)) {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      compacted[key] = trimmed;
+    }
+  }
+  return compacted;
+}
+
+function uniqueSorted(values: string[]) {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((left, right) =>
+    left.localeCompare(right),
+  );
 }
 
 function recommendationStatusForOverrideDecision(overrideDecision: string) {

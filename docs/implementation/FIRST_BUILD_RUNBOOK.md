@@ -2,6 +2,8 @@
 
 This runbook brings a new developer from a fresh checkout to a working first usable build. It covers the backend, frontend, migrations, sample data, local reset, and the runtime file locations used by the app.
 
+For M6 pilot validation, see [Pilot Validation](PILOT_VALIDATION.md). For release signoff, see [Release Readiness Checklist](RELEASE_READINESS.md). For backup, restore, and support troubleshooting, see [Operational Readiness Runbook](OPERATIONAL_READINESS_RUNBOOK.md).
+
 ## Scope
 
 Use this for local developer work on the first usable build:
@@ -164,7 +166,14 @@ Run backend tests and lint:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest backend\tests
+.\.venv\Scripts\python.exe -m pytest backend\tests\test_m6_pilot_validation.py
 .\.venv\Scripts\python.exe -m ruff check backend\app backend\tests
+```
+
+Run the full release check:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\release_check.ps1
 ```
 
 Run frontend tests and build:

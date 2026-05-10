@@ -35,18 +35,26 @@ def fixture_client(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
     get_settings.cache_clear()
 
 
-def test_create_and_download_first_build_report_exports(client: TestClient) -> None:
+def test_create_and_download_v1_report_exports(client: TestClient) -> None:
     planning_run_id = _create_calculated_planning_run(client)
 
     expected_sheets = {
-        "MACHINE_LOAD": "Machine_Load",
-        "SUBCONTRACT_PLAN": "Subcontract_Plan",
-        "VALVE_READINESS": "Valve_Readiness",
-        "FLOW_BLOCKER": "Flow_Blockers",
-        "DAILY_EXECUTION": "Daily_Execution",
+        "MACHINE_LOAD": ["Machine_Load"],
+        "SUBCONTRACT_PLAN": ["Subcontract_Plan"],
+        "VALVE_READINESS": ["Valve_Readiness"],
+        "FLOW_BLOCKER": ["Flow_Blockers"],
+        "DAILY_EXECUTION": ["Daily_Execution"],
+        "WEEKLY_PLANNING": [
+            "Weekly_Summary",
+            "Machine_Load",
+            "Valve_Readiness",
+            "Flow_Blockers",
+            "Subcontract_Plan",
+        ],
+        "A3_PLANNING": ["A3_Planning"],
     }
 
-    for report_type, sheet_name in expected_sheets.items():
+    for report_type, sheet_names in expected_sheets.items():
         create_response = client.post(
             f"/api/v1/planning-runs/{planning_run_id}/exports",
             json={"report_type": report_type, "file_format": "XLSX"},
@@ -59,8 +67,9 @@ def test_create_and_download_first_build_report_exports(client: TestClient) -> N
         assert payload["file_format"] == "XLSX"
         assert payload["generated_by_user_display_name"] == "Development Planner"
         assert payload["download_url"] == f"/api/v1/exports/{payload['id']}/download"
-        assert payload["metadata"]["sheet_names"] == [sheet_name]
-        assert payload["metadata"]["sheet_row_counts"][sheet_name] >= 0
+        assert payload["metadata"]["sheet_names"] == sheet_names
+        for sheet_name in sheet_names:
+            assert payload["metadata"]["sheet_row_counts"][sheet_name] >= 0
 
         detail_response = client.get(f"/api/v1/exports/{payload['id']}")
         assert detail_response.status_code == 200
@@ -76,7 +85,7 @@ def test_create_and_download_first_build_report_exports(client: TestClient) -> N
         assert download_response.headers["x-report-export-id"] == payload["id"]
 
         workbook = load_workbook(filename=BytesIO(download_response.content))
-        assert workbook.sheetnames == ["Export_Info", sheet_name]
+        assert workbook.sheetnames == ["Export_Info", *sheet_names]
 
 
 def test_create_report_export_rejects_unsupported_format(client: TestClient) -> None:
@@ -132,22 +141,20 @@ def test_list_report_exports_returns_history_and_latest_by_report_type(client: T
     assert latest_by_type["MACHINE_LOAD"]["generated_by_user_display_name"] == "Development Planner"
 
 
-def test_create_report_export_rejects_future_format_and_report_type(client: TestClient) -> None:
+def test_create_report_export_rejects_unsupported_format_and_unknown_report_type(client: TestClient) -> None:
     planning_run_id = _create_calculated_planning_run(client)
 
     pdf_response = client.post(
         f"/api/v1/planning-runs/{planning_run_id}/exports",
         json={"report_type": "MACHINE_LOAD", "file_format": "PDF"},
     )
-    assert pdf_response.status_code == 400
-    assert pdf_response.json()["detail"]["code"] == "UNSUPPORTED_EXPORT_FORMAT"
+    assert pdf_response.status_code == 422
 
-    weekly_response = client.post(
+    unknown_report_response = client.post(
         f"/api/v1/planning-runs/{planning_run_id}/exports",
-        json={"report_type": "WEEKLY_PLANNING", "file_format": "XLSX"},
+        json={"report_type": "UNKNOWN_REPORT", "file_format": "XLSX"},
     )
-    assert weekly_response.status_code == 400
-    assert weekly_response.json()["detail"]["code"] == "UNSUPPORTED_REPORT_TYPE"
+    assert unknown_report_response.status_code == 422
 
 
 def test_create_report_export_returns_structured_error_and_logs_unexpected_failure(

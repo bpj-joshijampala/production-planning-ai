@@ -45,6 +45,30 @@ export interface PlanningRunDashboardSummaryResponse {
   batch_risks: number;
 }
 
+export interface IncomingLoadItemResponse {
+  valve_id: string;
+  customer: string;
+  valve_type: string | null;
+  component_line_no: number;
+  component: string;
+  qty: number;
+  availability_date: string;
+  date_confidence: string;
+  current_ready_flag: boolean;
+  machine_types: string[];
+  priority_score: number;
+  sort_sequence: number;
+  same_day_arrival_load_days: number | null;
+  batch_risk_flag: boolean;
+}
+
+interface IncomingLoadListResponse {
+  items: IncomingLoadItemResponse[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface MachineLoadSummaryResponse {
   machine_type: string;
   total_operation_hours: number;
@@ -256,6 +280,7 @@ export interface PlannerOverrideResponse {
   reason: string;
   remarks: string | null;
   stale_flag: boolean;
+  stale_reason?: string | null;
   user_id: string;
   user_display_name: string;
   created_at: string;
@@ -264,6 +289,9 @@ export interface PlannerOverrideResponse {
 interface PlannerOverrideListResponse {
   planning_run_id: string;
   overrides: PlannerOverrideResponse[];
+  stale_override_count?: number;
+  current_override_count?: number;
+  replanning_policy?: string;
 }
 
 export type ReportType =
@@ -271,7 +299,9 @@ export type ReportType =
   | "SUBCONTRACT_PLAN"
   | "VALVE_READINESS"
   | "FLOW_BLOCKER"
-  | "DAILY_EXECUTION";
+  | "DAILY_EXECUTION"
+  | "WEEKLY_PLANNING"
+  | "A3_PLANNING";
 
 export interface ReportExportResponse {
   id: string;
@@ -332,6 +362,16 @@ function withAbsoluteApiUrl(path: string) {
   }
 
   return `${apiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function queryString(params: Record<string, string | number | null | undefined>) {
+  const searchParams = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") {
+      searchParams.set(key, String(value));
+    }
+  }
+  return searchParams.toString();
 }
 
 async function getAllPages<TItem, TResponse extends { items: TItem[]; total: number; page: number; page_size: number }>(
@@ -431,25 +471,68 @@ export async function fetchPlanningRunDashboardSummary(
   return getJson<PlanningRunDashboardSummaryResponse>(`/api/v1/planning-runs/${planningRunId}/dashboard`);
 }
 
-export async function fetchMachineLoad(planningRunId: string): Promise<MachineLoadListResponse> {
+export async function fetchIncomingLoad(
+  planningRunId: string,
+  filters: {
+    customer?: string;
+    valve_type?: string;
+    machine_type?: string;
+    date_confidence?: string;
+    availability_from?: string;
+    availability_to?: string;
+  } = {},
+): Promise<IncomingLoadListResponse> {
+  return getAllPages<IncomingLoadItemResponse, IncomingLoadListResponse>((page) => {
+    const params = queryString({
+      ...filters,
+      page,
+      page_size: 100,
+    });
+    return `/api/v1/planning-runs/${planningRunId}/incoming-load?${params}`;
+  });
+}
+
+export async function fetchMachineLoad(
+  planningRunId: string,
+  filters: { status?: string } = {},
+): Promise<MachineLoadListResponse> {
   return getAllPages<MachineLoadSummaryResponse, MachineLoadListResponse>(
-    (page) => `/api/v1/planning-runs/${planningRunId}/machine-load?sort=load_days&direction=desc&page=${page}&page_size=100`,
+    (page) => {
+      const params = queryString({
+        status: filters.status,
+        page,
+        page_size: 100,
+      });
+      return `/api/v1/planning-runs/${planningRunId}/machine-load?${params}`;
+    },
   );
 }
 
 export async function fetchMachineQueue(
   planningRunId: string,
   machineType: string,
+  filters: {
+    status?: string;
+    date_confidence?: string;
+    kit?: string;
+    recommendation?: string;
+  } = {},
 ): Promise<QueueOperationListResponse> {
-  return getAllPages<QueueOperationResponse, QueueOperationListResponse>(
-    (page) =>
-      `/api/v1/planning-runs/${planningRunId}/machine-load/${encodeURIComponent(machineType)}/queue?sort=sort_sequence&direction=asc&page=${page}&page_size=100`,
-  );
+  return getAllPages<QueueOperationResponse, QueueOperationListResponse>((page) => {
+    const params = queryString({
+      sort: "sort_sequence",
+      direction: "asc",
+      ...filters,
+      page,
+      page_size: 100,
+    });
+    return `/api/v1/planning-runs/${planningRunId}/machine-load/${encodeURIComponent(machineType)}/queue?${params}`;
+  });
 }
 
 export async function fetchValveReadiness(planningRunId: string): Promise<ValveReadinessListResponse> {
   return getAllPages<ValveReadinessItemResponse, ValveReadinessListResponse>(
-    (page) => `/api/v1/planning-runs/${planningRunId}/valve-readiness?sort=assembly_date&direction=asc&page=${page}&page_size=100`,
+    (page) => `/api/v1/planning-runs/${planningRunId}/valve-readiness?page=${page}&page_size=100`,
   );
 }
 
@@ -494,7 +577,7 @@ export async function fetchFlowBlockers(planningRunId: string): Promise<FlowBloc
 
 export async function createPlannerOverride(request: {
   planning_run_id: string;
-  entity_type: "RECOMMENDATION";
+  entity_type: "RECOMMENDATION" | "OPERATION" | "VALVE" | "MACHINE" | "VENDOR";
   entity_id: string;
   original_recommendation?: string | null;
   override_decision: string;

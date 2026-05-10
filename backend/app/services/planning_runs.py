@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.auth import DEFAULT_DEV_USER_ID
+from app.core.auth import DEFAULT_DEV_USER_ID, WRITE_ROLES, load_acting_user_for_roles
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
 from app.models.canonical import ComponentStatus, Machine, RoutingOperation, Valve, Vendor
@@ -35,6 +35,7 @@ def create_planning_run(
     *,
     created_by_user_id: str = DEFAULT_DEV_USER_ID,
 ) -> PlanningRunResponse:
+    acting_user = load_acting_user_for_roles(user_id=created_by_user_id, db=db, allowed_roles=WRITE_ROLES)
     upload_batch = _load_upload_for_planning(request.upload_batch_id, db)
     _ensure_upload_can_create_planning_run(upload_batch, db)
 
@@ -45,7 +46,7 @@ def create_planning_run(
         planning_start_date=_resolve_planning_start_date(request, upload_batch).isoformat(),
         planning_horizon_days=request.planning_horizon_days,
         status="CREATED",
-        created_by_user_id=created_by_user_id,
+        created_by_user_id=acting_user.id,
         created_at=created_at,
     )
 
@@ -79,6 +80,7 @@ def recalculate_planning_run(
     settings_override: PlanningSettingsOverride | None = None,
     calculated_by_user_id: str = DEFAULT_DEV_USER_ID,
 ) -> PlanningRun:
+    acting_user = load_acting_user_for_roles(user_id=calculated_by_user_id, db=db, allowed_roles=WRITE_ROLES)
     planning_run = _load_planning_run(planning_run_id, db)
     previous_calculated_at = planning_run.calculated_at
 
@@ -130,7 +132,7 @@ def recalculate_planning_run(
         upload_batch.status = "CALCULATED"
         planning_run.status = "CALCULATED"
         planning_run.calculated_at = utc_now_iso()
-        planning_run.calculated_by_user_id = calculated_by_user_id
+        planning_run.calculated_by_user_id = acting_user.id
         planning_run.error_message = None
         upsert_planning_run_metadata(
             planning_run.id,
@@ -148,7 +150,7 @@ def recalculate_planning_run(
             planning_run_id=planning_run_id,
             error_message=str(exc),
             calculated_at=previous_calculated_at,
-            calculated_by_user_id=calculated_by_user_id,
+            calculated_by_user_id=acting_user.id,
             db=db,
         )
         raise

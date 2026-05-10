@@ -809,7 +809,7 @@ Required fields:
 | planning_run_id | FK |
 | report_type | Enum |
 | file_path | Text |
-| file_format | XLSX, PDF, HTML |
+| file_format | XLSX |
 | generated_by_user_id | FK to users |
 | generated_at | Timestamp |
 
@@ -1195,7 +1195,7 @@ Generates an export.
 Request fields:
 
 - report_type
-- file_format
+- file_format (`XLSX` for V1; PDF/HTML print views are deferred)
 
 ```text
 GET /api/v1/exports/{report_export_id}/download
@@ -1490,10 +1490,15 @@ Exports must:
 
 ## 25. Open Technical Questions
 
-These questions do not block initial scaffolding, but should be resolved before final V1 release:
+These questions were resolved before final V1 pilot readiness:
 
-1. Should local authentication be implemented immediately, or can V1 begin with a single default planner user in development?
-2. Should generated exports include one workbook with multiple sheets or separate files per report?
-3. Should stale planner overrides after recalculation remain visible only in the action log, or also appear as warnings on affected dashboards?
-4. What is the preferred backup location for the SQLite database and upload/export directories?
-5. Should app settings such as flow_gap_limit_days be configurable in the UI or kept as backend constants for V1?
+1. Resolved in M6-E2: V1 pilot uses the seeded default `dev.planner` acting user; local username/password login is deferred.
+2. Resolved in M6-E6: each requested report creates its own workbook; Weekly Planning is the multi-sheet planning pack.
+3. Resolved in M6-E4: local backup archives are created under `data/backups/` by default and must be copied off-machine for pilot use.
+4. Resolved in M6-E6: app settings such as `flow_gap_limit_days` remain backend-owned constants/config for V1; settings UI is deferred.
+
+Resolved technical decisions:
+
+- Stale planner overrides after recalculation remain visible only in the action log for V1. Affected dashboard warnings and override-driven replanning are deferred.
+- Runtime backup uses a single manifest-bearing `.zip` archive containing the SQLite database, upload directory, and export directory. Restore must be smoke-tested in a separate path before replacing runtime data.
+- Release readiness is tracked in `docs/implementation/RELEASE_READINESS.md` and verified with `scripts/release_check.ps1`.

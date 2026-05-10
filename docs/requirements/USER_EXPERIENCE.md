@@ -852,6 +852,8 @@ Default sort:
 
 Must show stale/orphaned overrides if recalculation invalidates their target.
 
+For V1, stale/orphaned overrides appear in the planner action log only. The action log must show a warning when one or more recorded decisions became stale after recalculation, and each stale row must explain that override-driven replanning is deferred.
+
 ### 8.11 Reports
 
 Reports screen must show:
@@ -916,6 +918,8 @@ When user overrides:
 Reason is mandatory.
 
 Saving an override does not recalculate the plan in V1. Machine load, queue order, throughput, and recommendations remain based on the current PlanningRun until a future replanning workflow is introduced.
+
+Recalculation does not replay earlier overrides into newly generated recommendations or operations. If an earlier target no longer exists, the old action stays visible as stale/orphaned and the planner records a new decision if needed.
 
 ## 10. States and Feedback
 

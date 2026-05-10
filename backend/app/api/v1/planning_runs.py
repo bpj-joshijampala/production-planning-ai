@@ -185,6 +185,11 @@ def list_incoming_load_endpoint(
     sort: str | None = Query(None),
     direction: Literal["asc", "desc"] = Query("asc"),
     customer: str | None = Query(None),
+    valve_type: str | None = Query(None),
+    machine_type: str | None = Query(None),
+    date_confidence: str | None = Query(None),
+    availability_from: str | None = Query(None),
+    availability_to: str | None = Query(None),
     db: Session = Depends(get_db),
 ) -> IncomingLoadListResponse:
     return list_incoming_load(
@@ -195,6 +200,11 @@ def list_incoming_load_endpoint(
         sort=sort,
         direction=direction,
         customer=customer,
+        valve_type=valve_type,
+        machine_type=machine_type,
+        date_confidence=date_confidence,
+        availability_from=availability_from,
+        availability_to=availability_to,
     )
 
 
@@ -269,6 +279,9 @@ def list_machine_queue_endpoint(
     direction: Literal["asc", "desc"] = Query("asc"),
     customer: str | None = Query(None),
     status_filter: str | None = Query(None, alias="status"),
+    date_confidence: str | None = Query(None),
+    kit_filter: str | None = Query(None, alias="kit"),
+    recommendation_filter: str | None = Query(None, alias="recommendation"),
     db: Session = Depends(get_db),
 ) -> QueueOperationListResponse:
     return list_machine_queue(
@@ -281,6 +294,9 @@ def list_machine_queue_endpoint(
         direction=direction,
         customer=customer,
         status_filter=status_filter,
+        date_confidence=date_confidence,
+        kit_filter=kit_filter,
+        recommendation_filter=recommendation_filter,
     )
 
 

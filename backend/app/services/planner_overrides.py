@@ -2,7 +2,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.auth import DEFAULT_DEV_USER_ID, load_acting_user
+from app.core.auth import DEFAULT_DEV_USER_ID, WRITE_ROLES, load_acting_user_for_roles
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
 from app.models.canonical import Valve, Vendor
@@ -15,12 +15,24 @@ from app.schemas.planner_override import (
     PlannerOverrideResponse,
 )
 
+ALLOWED_OVERRIDE_DECISIONS = {
+    "ACCEPT",
+    "REJECT",
+    "FORCE_IN_HOUSE",
+    "FORCE_VENDOR",
+    "CHANGE_MACHINE_ASSIGNMENT",
+    "OVERRIDE_PRIORITY",
+    "ADD_REMARKS",
+    "OVERRIDE",
+}
+
 def create_planner_override(
     request: PlannerOverrideCreateRequest,
     db: Session,
     *,
     user_id: str = DEFAULT_DEV_USER_ID,
 ) -> PlannerOverrideResponse:
+    acting_user = load_acting_user_for_roles(user_id=user_id, db=db, allowed_roles=WRITE_ROLES)
     planning_run = _load_planning_run(request.planning_run_id, db)
     _require_non_blank(request.reason, code="OVERRIDE_REQUIRES_REASON", message="Reason is required.")
     entity_id = _required_trimmed_value(
@@ -52,7 +64,6 @@ def create_planner_override(
             db=db,
         )
 
-    acting_user = load_acting_user(user_id=user_id, db=db)
     override = PlannerOverride(
         id=new_uuid(),
         planning_run_id=planning_run.id,
@@ -92,6 +103,7 @@ def list_planner_overrides(planning_run_id: str, db: Session) -> PlannerOverride
         row.id: row.display_name
         for row in db.scalars(select(User).where(User.id.in_({row.user_id for row in overrides})))
     }
+    stale_override_count = sum(1 for row in overrides if row.stale_flag == 1)
     return PlannerOverrideListResponse(
         planning_run_id=planning_run_id,
         overrides=[
@@ -101,6 +113,8 @@ def list_planner_overrides(planning_run_id: str, db: Session) -> PlannerOverride
             )
             for row in overrides
         ],
+        stale_override_count=stale_override_count,
+        current_override_count=len(overrides) - stale_override_count,
     )
 
 
@@ -204,7 +218,17 @@ def _normalized_override_decision(value: str, *, code: str, message: str) -> str
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": code, "message": message},
         )
-    return trimmed.upper()
+    normalized = trimmed.upper()
+    if normalized not in ALLOWED_OVERRIDE_DECISIONS:
+        allowed_values = ", ".join(sorted(ALLOWED_OVERRIDE_DECISIONS))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "UNSUPPORTED_OVERRIDE_DECISION",
+                "message": f"Override decision {trimmed} is not supported. Use one of: {allowed_values}.",
+            },
+        )
+    return normalized
 
 
 def _required_trimmed_value(value: str, *, code: str, message: str) -> str:
@@ -244,7 +268,24 @@ def _to_response(*, override: PlannerOverride, user_display_name: str) -> Planne
         reason=override.reason,
         remarks=override.remarks,
         stale_flag=bool(override.stale_flag),
+        stale_reason=_stale_reason(override),
         user_id=override.user_id,
         user_display_name=user_display_name,
         created_at=override.created_at,
+    )
+
+
+def _stale_reason(override: PlannerOverride) -> str | None:
+    if override.stale_flag != 1:
+        return None
+    target_label = {
+        "RECOMMENDATION": "Recommendation",
+        "OPERATION": "Operation",
+        "VALVE": "Valve",
+        "MACHINE": "Machine",
+        "VENDOR": "Vendor",
+    }.get(override.entity_type, "Override")
+    return (
+        f"{target_label} target is stale or orphaned after recalculation. "
+        "The decision remains in the action log but is not replayed in V1."
     )

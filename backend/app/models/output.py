@@ -401,7 +401,7 @@ class ReportExport(Base):
             name="ck_report_exports_report_type",
         ),
         CheckConstraint(
-            "file_format in ('XLSX', 'PDF', 'HTML')",
+            "file_format = 'XLSX'",
             name="ck_report_exports_file_format",
         ),
         CheckConstraint("length(trim(file_path)) > 0", name="ck_report_exports_file_path_not_blank"),

@@ -7,7 +7,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.auth import DEFAULT_DEV_USER_ID
+from app.core.auth import DEFAULT_DEV_USER_ID, EXPORT_ROLES, load_acting_user_for_roles
 from app.core.config import get_settings
 from app.core.ids import new_uuid
 from app.core.time import utc_now_iso
@@ -15,9 +15,11 @@ from app.exports.workbook import ExportSheet, build_export_workbook
 from app.models.output import (
     FlowBlocker,
     MachineLoadSummary,
+    PlannerOverride,
     PlannedOperation,
     Recommendation,
     ReportExport,
+    ThroughputSummary,
     ValveReadinessSummary,
 )
 from app.models.planning_run import PlanningRun
@@ -52,10 +54,14 @@ def generate_xlsx_report_export(
             detail={"code": "UNSUPPORTED_REPORT_TYPE", "message": f"Unsupported report type {report_type}."},
         )
 
+    generated_by_user = load_acting_user_for_roles(
+        user_id=generated_by_user_id,
+        db=db,
+        allowed_roles=EXPORT_ROLES,
+    )
     planning_run = _load_planning_run(planning_run_id=planning_run_id, db=db)
     _ensure_planning_run_is_calculated(planning_run)
     upload_batch = _load_upload_batch(upload_batch_id=planning_run.upload_batch_id, db=db)
-    generated_by_user = _load_user(user_id=generated_by_user_id, db=db)
 
     report_export_id = new_uuid()
     generated_at = utc_now_iso()
@@ -70,15 +76,26 @@ def generate_xlsx_report_export(
     audit_committed = False
 
     try:
+        export_info_rows = _build_export_info_rows(
+            planning_run=planning_run,
+            upload_batch=upload_batch,
+            report_type=report_type,
+            generated_at=generated_at,
+            generated_by_user=generated_by_user,
+        )
+        report_sheets = sheets
+        if report_type == "A3_PLANNING":
+            report_sheets = (
+                _build_a3_planning_sheet(
+                    planning_run_id=planning_run_id,
+                    db=db,
+                    export_info_rows=export_info_rows,
+                ),
+            )
+
         workbook = build_export_workbook(
-            export_info_rows=_build_export_info_rows(
-                planning_run=planning_run,
-                upload_batch=upload_batch,
-                report_type=report_type,
-                generated_at=generated_at,
-                generated_by_user=generated_by_user,
-            ),
-            sheets=sheets,
+            export_info_rows=export_info_rows,
+            sheets=report_sheets,
         )
         workbook.save(file_path)
 
@@ -92,8 +109,8 @@ def generate_xlsx_report_export(
             generated_at=generated_at,
             metadata_json=json.dumps(
                 {
-                    "sheet_names": [sheet.name for sheet in sheets],
-                    "sheet_row_counts": {sheet.name: len(sheet.rows) for sheet in sheets},
+                    "sheet_names": [sheet.name for sheet in report_sheets],
+                    "sheet_row_counts": {sheet.name: len(sheet.rows) for sheet in report_sheets},
                 },
                 sort_keys=True,
                 separators=(",", ":"),
@@ -122,6 +139,11 @@ def generate_first_build_report_export(
     db: Session,
     generated_by_user_id: str = DEFAULT_DEV_USER_ID,
 ) -> ReportExport:
+    load_acting_user_for_roles(
+        user_id=generated_by_user_id,
+        db=db,
+        allowed_roles=EXPORT_ROLES,
+    )
     normalized_file_format = file_format.strip().upper()
     if normalized_file_format != SUPPORTED_FILE_FORMAT:
         raise HTTPException(
@@ -132,7 +154,7 @@ def generate_first_build_report_export(
             },
         )
 
-    sheets = _build_first_usable_report_sheets(planning_run_id=planning_run_id, report_type=report_type, db=db)
+    sheets = _build_report_sheets(planning_run_id=planning_run_id, report_type=report_type, db=db)
     return generate_xlsx_report_export(
         planning_run_id=planning_run_id,
         report_type=report_type,
@@ -231,7 +253,7 @@ def _build_export_info_rows(
     )
 
 
-def _build_first_usable_report_sheets(
+def _build_report_sheets(
     *,
     planning_run_id: str,
     report_type: str,
@@ -247,10 +269,96 @@ def _build_first_usable_report_sheets(
         return (_build_flow_blocker_sheet(planning_run_id=planning_run_id, db=db),)
     if report_type == "DAILY_EXECUTION":
         return (_build_daily_execution_sheet(planning_run_id=planning_run_id, db=db),)
+    if report_type == "WEEKLY_PLANNING":
+        return _build_weekly_planning_sheets(planning_run_id=planning_run_id, db=db)
+    if report_type == "A3_PLANNING":
+        return (_build_a3_planning_sheet(planning_run_id=planning_run_id, db=db),)
 
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={"code": "UNSUPPORTED_REPORT_TYPE", "message": f"Unsupported report type {report_type}."},
+    )
+
+
+def _build_weekly_planning_sheets(*, planning_run_id: str, db: Session) -> tuple[ExportSheet, ...]:
+    return (
+        _build_weekly_summary_sheet(planning_run_id=planning_run_id, db=db),
+        _build_machine_load_sheet(planning_run_id=planning_run_id, db=db),
+        _build_valve_readiness_sheet(planning_run_id=planning_run_id, db=db),
+        _build_flow_blocker_sheet(planning_run_id=planning_run_id, db=db),
+        _build_subcontract_plan_sheet(planning_run_id=planning_run_id, db=db),
+    )
+
+
+def _build_weekly_summary_sheet(*, planning_run_id: str, db: Session) -> ExportSheet:
+    throughput = db.scalar(select(ThroughputSummary).where(ThroughputSummary.planning_run_id == planning_run_id))
+    overloaded_machine_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(MachineLoadSummary)
+            .where(MachineLoadSummary.planning_run_id == planning_run_id)
+            .where(MachineLoadSummary.overload_flag == 1)
+        )
+        or 0
+    )
+    underutilized_machine_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(MachineLoadSummary)
+            .where(MachineLoadSummary.planning_run_id == planning_run_id)
+            .where(MachineLoadSummary.underutilized_flag == 1)
+        )
+        or 0
+    )
+    assembly_risk_valve_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(ValveReadinessSummary)
+            .where(ValveReadinessSummary.planning_run_id == planning_run_id)
+            .where(ValveReadinessSummary.otd_risk_flag == 1)
+        )
+        or 0
+    )
+    flow_blocker_count = (
+        db.scalar(select(func.count()).select_from(FlowBlocker).where(FlowBlocker.planning_run_id == planning_run_id))
+        or 0
+    )
+    subcontract_recommendation_count = (
+        db.scalar(
+            select(func.count())
+            .select_from(Recommendation)
+            .where(Recommendation.planning_run_id == planning_run_id)
+            .where(Recommendation.recommendation_type.in_(("SUBCONTRACT", "BATCH_SUBCONTRACT_OPPORTUNITY")))
+        )
+        or 0
+    )
+
+    return ExportSheet(
+        name="Weekly_Summary",
+        columns=(
+            "Target_Throughput_Value_Cr",
+            "Planned_Throughput_Value_Cr",
+            "Throughput_Gap_Cr",
+            "Throughput_Risk_Flag",
+            "Overloaded_Machine_Count",
+            "Underutilized_Machine_Count",
+            "Assembly_Risk_Valve_Count",
+            "Flow_Blocker_Count",
+            "Subcontract_Recommendation_Count",
+        ),
+        rows=(
+            {
+                "Target_Throughput_Value_Cr": 0.0 if throughput is None else throughput.target_throughput_value_cr,
+                "Planned_Throughput_Value_Cr": 0.0 if throughput is None else throughput.planned_throughput_value_cr,
+                "Throughput_Gap_Cr": 0.0 if throughput is None else throughput.throughput_gap_cr,
+                "Throughput_Risk_Flag": 0 if throughput is None else throughput.throughput_risk_flag,
+                "Overloaded_Machine_Count": overloaded_machine_count,
+                "Underutilized_Machine_Count": underutilized_machine_count,
+                "Assembly_Risk_Valve_Count": assembly_risk_valve_count,
+                "Flow_Blocker_Count": flow_blocker_count,
+                "Subcontract_Recommendation_Count": subcontract_recommendation_count,
+            },
+        ),
     )
 
 
@@ -416,20 +524,7 @@ def _build_valve_readiness_sheet(*, planning_run_id: str, db: Session) -> Export
 
 
 def _build_flow_blocker_sheet(*, planning_run_id: str, db: Session) -> ExportSheet:
-    severity_rank = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
-    rows = list(
-        db.scalars(select(FlowBlocker).where(FlowBlocker.planning_run_id == planning_run_id))
-    )
-    rows.sort(
-        key=lambda row: (
-            severity_rank.get(row.severity, 99),
-            row.blocker_type or "",
-            row.valve_id or "",
-            row.component_line_no or 0,
-            row.operation_name or "",
-            row.id,
-        )
-    )
+    rows = _flow_blocker_rows(planning_run_id=planning_run_id, db=db)
     return ExportSheet(
         name="Flow_Blockers",
         columns=(
@@ -458,18 +553,263 @@ def _build_flow_blocker_sheet(*, planning_run_id: str, db: Session) -> ExportShe
     )
 
 
-def _build_daily_execution_sheet(*, planning_run_id: str, db: Session) -> ExportSheet:
-    operations = list(
-        db.scalars(select(PlannedOperation).where(PlannedOperation.planning_run_id == planning_run_id))
-    )
-    operations.sort(
-        key=lambda row: (
-            row.internal_completion_date is None,
-            row.internal_completion_date or "",
-            row.sort_sequence,
-            row.id,
+def _build_a3_planning_sheet(
+    *,
+    planning_run_id: str,
+    db: Session,
+    export_info_rows: tuple[tuple[str, object | None], ...] | None = None,
+) -> ExportSheet:
+    planning_run = _load_planning_run(planning_run_id=planning_run_id, db=db)
+    throughput = db.scalar(select(ThroughputSummary).where(ThroughputSummary.planning_run_id == planning_run_id))
+    rows: list[dict[str, object | None]] = []
+    if export_info_rows is None:
+        rows.extend(
+            (
+                _a3_row(
+                    section="Export info",
+                    item="PlanningRun_ID",
+                    value=planning_run.id,
+                    detail=f"Start {planning_run.planning_start_date}; horizon {planning_run.planning_horizon_days} days",
+                ),
+                _a3_row(
+                    section="Export info",
+                    item="Planning_Start_Date",
+                    value=planning_run.planning_start_date,
+                    detail=None,
+                ),
+                _a3_row(
+                    section="Export info",
+                    item="Planning_Horizon_Days",
+                    value=planning_run.planning_horizon_days,
+                    detail=None,
+                ),
+            )
+        )
+    else:
+        rows.extend(
+            _a3_row(section="Export info", item=field, value=value, detail=None)
+            for field, value in export_info_rows
+        )
+
+    rows.append(
+        _a3_row(
+            section="A3 format decision",
+            item="V1 output format",
+            value="XLSX",
+            detail="Formatted Excel is sufficient for V1; PDF/HTML print views are deferred unless product reopens the decision.",
         )
     )
+
+    if throughput is not None:
+        rows.extend(
+            (
+                _a3_row(
+                    section="Throughput check",
+                    item="Target throughput",
+                    value=throughput.target_throughput_value_cr,
+                    detail="Cr",
+                ),
+                _a3_row(
+                    section="Throughput check",
+                    item="Planned throughput",
+                    value=throughput.planned_throughput_value_cr,
+                    detail=f"Gap {throughput.throughput_gap_cr} Cr; risk {bool(throughput.throughput_risk_flag)}",
+                ),
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Throughput check",
+        detail="No throughput summary was generated for this planning run.",
+    )
+
+    machine_rows = list(
+        db.scalars(
+            select(MachineLoadSummary)
+            .where(MachineLoadSummary.planning_run_id == planning_run_id)
+            .order_by(MachineLoadSummary.machine_type.asc(), MachineLoadSummary.id.asc())
+        )
+    )
+    for machine in machine_rows:
+        if machine.overload_flag:
+            rows.append(
+                _a3_row(
+                    section="Overloaded machines",
+                    item=machine.machine_type,
+                    value=machine.load_days,
+                    detail=f"Buffer {machine.buffer_days}; overload {machine.overload_days} days",
+                    recommended_action="Review alternate machine, subcontract, or queue rebalance.",
+                )
+            )
+        if machine.underutilized_flag:
+            rows.append(
+                _a3_row(
+                    section="Underutilized machines",
+                    item=machine.machine_type,
+                    value=machine.load_days,
+                    detail=f"Buffer {machine.buffer_days}; spare {machine.spare_capacity_days} days",
+                    recommended_action="Consider pull-forward work if priorities allow.",
+                )
+            )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Overloaded machines",
+        detail="No overloaded machines in the current planning run.",
+    )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Underutilized machines",
+        detail="No underutilized machines in the current planning run.",
+    )
+
+    blocker_rows = _flow_blocker_rows(planning_run_id=planning_run_id, db=db)
+    for blocker in blocker_rows[:10]:
+        rows.append(
+            _a3_row(
+                section="Top flow blockers",
+                item=f"{blocker.severity} {blocker.blocker_type}",
+                value=blocker.valve_id,
+                detail=blocker.cause,
+                recommended_action=blocker.recommended_action,
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Top flow blockers",
+        detail="No flow blockers were generated for this planning run.",
+    )
+    for blocker in blocker_rows:
+        if blocker.blocker_type != "BATCH_RISK":
+            continue
+        rows.append(
+            _a3_row(
+                section="Batch risks",
+                item=blocker.blocker_type,
+                value=blocker.valve_id,
+                detail=blocker.cause,
+                recommended_action=blocker.recommended_action,
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Batch risks",
+        detail="No batch risks were generated for this planning run.",
+    )
+
+    subcontract_rows = list(
+        db.scalars(
+            select(Recommendation)
+            .where(Recommendation.planning_run_id == planning_run_id)
+            .where(Recommendation.recommendation_type.in_(("SUBCONTRACT", "BATCH_SUBCONTRACT_OPPORTUNITY")))
+            .order_by(
+                Recommendation.suggested_vendor_id.asc(),
+                Recommendation.valve_id.asc(),
+                Recommendation.component_line_no.asc(),
+                Recommendation.operation_name.asc(),
+                Recommendation.id.asc(),
+            )
+        )
+    )
+    for recommendation in subcontract_rows:
+        rows.append(
+            _a3_row(
+                section="Subcontract actions",
+                item=recommendation.operation_name,
+                value=recommendation.recommendation_type,
+                detail=(
+                    f"{recommendation.valve_id} line {recommendation.component_line_no}; "
+                    f"vendor {recommendation.suggested_vendor_name or recommendation.suggested_vendor_id or '-'}; "
+                    f"gain {recommendation.vendor_gain_days}"
+                ),
+                recommended_action=recommendation.explanation,
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Subcontract actions",
+        detail="No subcontract actions were recommended for this planning run.",
+    )
+
+    assembly_risk_rows = list(
+        db.scalars(
+            select(ValveReadinessSummary)
+            .where(ValveReadinessSummary.planning_run_id == planning_run_id)
+            .where(ValveReadinessSummary.otd_risk_flag == 1)
+            .order_by(
+                ValveReadinessSummary.otd_delay_days.desc(),
+                ValveReadinessSummary.assembly_date.asc(),
+                ValveReadinessSummary.valve_id.asc(),
+            )
+        )
+    )
+    for readiness in assembly_risk_rows:
+        rows.append(
+            _a3_row(
+                section="Assembly risk valves",
+                item=readiness.valve_id,
+                value=readiness.otd_delay_days,
+                detail=f"Expected {readiness.valve_expected_completion_date}; reason {readiness.risk_reason}",
+                recommended_action="Review missing components, queue delays, and flow blockers before assembly.",
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Assembly risk valves",
+        detail="No assembly-risk valves in the current planning run.",
+    )
+
+    for operation in _planned_operation_rows(planning_run_id=planning_run_id, db=db)[:10]:
+        rows.append(
+            _a3_row(
+                section="Daily execution plan",
+                item=operation.operation_name,
+                value=operation.operation_arrival_date,
+                detail=f"{operation.machine_type}; {operation.valve_id} line {operation.component_line_no}; wait {operation.internal_wait_days}",
+                recommended_action=operation.recommendation_status,
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Daily execution plan",
+        detail="No planned operations were generated for this planning run.",
+    )
+
+    override_rows = list(
+        db.scalars(
+            select(PlannerOverride)
+            .where(PlannerOverride.planning_run_id == planning_run_id)
+            .order_by(PlannerOverride.created_at.asc(), PlannerOverride.id.asc())
+        )
+    )
+    for override in override_rows:
+        user = db.get(User, override.user_id)
+        rows.append(
+            _a3_row(
+                section="Planner overrides",
+                item=override.entity_id,
+                value=override.override_decision,
+                detail=(
+                    f"By {override.user_id if user is None else user.display_name}; "
+                    f"reason {override.reason}; stale {bool(override.stale_flag)}"
+                ),
+                recommended_action=override.remarks,
+            )
+        )
+    _append_a3_placeholder_if_missing(
+        rows,
+        section="Planner overrides",
+        detail="No planner overrides have been recorded for this planning run.",
+    )
+
+    return ExportSheet(
+        name="A3_Planning",
+        columns=("Section", "Item", "Value", "Detail", "Recommended_Action"),
+        rows=tuple(rows),
+    )
+
+
+def _build_daily_execution_sheet(*, planning_run_id: str, db: Session) -> ExportSheet:
+    operations = _planned_operation_rows(planning_run_id=planning_run_id, db=db)
     stable_recommendation_type_by_operation_id: dict[str, str] = {}
     for row in db.scalars(
         select(Recommendation)
@@ -514,6 +854,74 @@ def _build_daily_execution_sheet(*, planning_run_id: str, db: Session) -> Export
     )
 
 
+def _planned_operation_rows(*, planning_run_id: str, db: Session) -> list[PlannedOperation]:
+    rows = list(
+        db.scalars(select(PlannedOperation).where(PlannedOperation.planning_run_id == planning_run_id))
+    )
+    rows.sort(
+        key=lambda row: (
+            row.internal_completion_date is None,
+            row.internal_completion_date or "",
+            row.sort_sequence,
+            row.id,
+        )
+    )
+    return rows
+
+
+def _flow_blocker_rows(*, planning_run_id: str, db: Session) -> list[FlowBlocker]:
+    severity_rank = {"CRITICAL": 0, "WARNING": 1, "INFO": 2}
+    rows = list(
+        db.scalars(select(FlowBlocker).where(FlowBlocker.planning_run_id == planning_run_id))
+    )
+    rows.sort(
+        key=lambda row: (
+            severity_rank.get(row.severity, 99),
+            row.blocker_type or "",
+            row.valve_id or "",
+            row.component_line_no or 0,
+            row.operation_name or "",
+            row.id,
+        )
+    )
+    return rows
+
+
+def _append_a3_placeholder_if_missing(
+    rows: list[dict[str, object | None]],
+    *,
+    section: str,
+    detail: str,
+) -> None:
+    if any(row["Section"] == section for row in rows):
+        return
+    rows.append(
+        _a3_row(
+            section=section,
+            item="None",
+            value=None,
+            detail=detail,
+        )
+    )
+
+
+def _a3_row(
+    *,
+    section: str,
+    item: str,
+    value: object | None,
+    detail: str | None,
+    recommended_action: str | None = None,
+) -> dict[str, object | None]:
+    return {
+        "Section": section,
+        "Item": item,
+        "Value": value,
+        "Detail": detail,
+        "Recommended_Action": recommended_action,
+    }
+
+
 def _load_planning_run(*, planning_run_id: str, db: Session) -> PlanningRun:
     planning_run = db.get(PlanningRun, planning_run_id)
     if planning_run is None:
@@ -543,16 +951,6 @@ def _load_upload_batch(*, upload_batch_id: str, db: Session) -> UploadBatch:
             detail={"code": "UPLOAD_NOT_FOUND", "message": f"Upload {upload_batch_id} was not found."},
         )
     return upload_batch
-
-
-def _load_user(*, user_id: str, db: Session) -> User:
-    user = db.get(User, user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"code": "USER_NOT_FOUND", "message": f"User {user_id} was not found."},
-        )
-    return user
 
 
 def _resolve_export_file_path(*, report_export: ReportExport) -> Path:

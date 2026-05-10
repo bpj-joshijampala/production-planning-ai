@@ -347,11 +347,17 @@ V1 can be considered ready for pilot when:
 
 ## 15. Open Product Questions
 
-These product questions remain open and should be resolved before V1 release:
+These product questions were resolved before V1 pilot readiness:
 
-1. Should accepted subcontract recommendations appear in generated Excel exports by default?
-2. What user roles are required in the first release: planner only, or planner plus HOD and management views?
-3. For the later A3 export increment, is formatted Excel sufficient or is PDF/HTML print view also required?
+1. Accepted subcontract recommendations appear in generated Excel exports by default through recommendation status in the Subcontract Plan; A3 Planning includes planner override rows.
+
+Resolved product decisions are recorded in [PRODUCT_DECISIONS.md](../implementation/PRODUCT_DECISIONS.md):
+
+- M6-E1: A3 Planning Output ships as formatted `.xlsx`; PDF/HTML print view is deferred.
+- M6-E2: V1 uses seeded `dev.planner`; PLANNER can write/export, HOD and MANAGEMENT can view/export, and ADMIN is view-only until user/settings management exists.
+- M6-E3: stale/orphaned overrides remain visible in the action log; override-driven replanning is deferred.
+- M6-E4: runtime backup uses `data/backups/` local archives plus off-machine copy for pilot resilience.
+- M6-E6: accepted subcontract decisions are visible in exports by default, export packaging is one workbook per requested report, and settings UI is deferred.
 
 ## 16. Requirements Governance
 

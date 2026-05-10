@@ -11,6 +11,22 @@ function createJsonResponse(body: unknown, init: { ok?: boolean; status?: number
   };
 }
 
+function createDefaultPlannerUserResponse() {
+  return createJsonResponse({
+    id: "user-1",
+    username: "dev.planner",
+    display_name: "Development Planner",
+    role: "PLANNER",
+    active: true,
+  });
+}
+
+async function waitForDefaultPlannerRole() {
+  await waitFor(() => {
+    expect(screen.getByText("Development Planner (PLANNER)")).toBeInTheDocument();
+  });
+}
+
 describe("App", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -28,6 +44,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       throw new Error(`Unexpected fetch call: ${url}`);
@@ -56,6 +76,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.endsWith("/api/v1/uploads")) {
@@ -109,9 +133,7 @@ describe("App", () => {
 
     render(<App />);
 
-    await waitFor(() => {
-      expect(screen.getByText("local")).toBeInTheDocument();
-    });
+    await waitForDefaultPlannerRole();
 
     const fileInput = screen.getByLabelText("Upload workbook");
     fireEvent.change(fileInput, {
@@ -135,6 +157,129 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Planning run setup next" })).toBeEnabled();
   });
 
+  it("disables upload and planning actions for view/export roles", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createJsonResponse({
+          id: "user-hod",
+          username: "hod.viewer",
+          display_name: "HOD Viewer",
+          role: "HOD",
+          active: true,
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("HOD Viewer (HOD)")).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText("Upload workbook")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Upload workbook" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Planning run setup next" })).toBeDisabled();
+    expect(screen.getByText("Current role can view planning data but cannot upload or calculate.")).toBeInTheDocument();
+  });
+
+  it("keeps write actions disabled until the current user is loaded", async () => {
+    let resolveCurrentUser: (response: ReturnType<typeof createDefaultPlannerUserResponse>) => void = () => undefined;
+    const currentUserPromise = new Promise<ReturnType<typeof createDefaultPlannerUserResponse>>((resolve) => {
+      resolveCurrentUser = resolve;
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return currentUserPromise;
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("local")).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole("button", { name: "Upload workbook" })).toBeDisabled();
+    expect(screen.getByText("Loading current role before upload or calculation.")).toBeInTheDocument();
+
+    resolveCurrentUser(createDefaultPlannerUserResponse());
+
+    await waitFor(() => {
+      expect(screen.getByText("Development Planner (PLANNER)")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: "Upload workbook" })).toBeEnabled();
+  });
+
+  it("keeps write actions disabled when the current user cannot be loaded", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createJsonResponse(
+          {
+            detail: {
+              code: "ACTING_USER_INACTIVE",
+              message: "Acting user is inactive and cannot perform this action.",
+            },
+          },
+          { ok: false, status: 403 },
+        );
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Current user could not be loaded. Write and export actions are disabled.")).toBeInTheDocument();
+    });
+
+    expect(screen.getByRole("button", { name: "Upload workbook" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Planning run setup next" })).toBeDisabled();
+  });
+
   it("disables planning-run creation when blocking errors exist", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -146,6 +291,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.endsWith("/api/v1/uploads")) {
@@ -211,6 +360,8 @@ describe("App", () => {
 
     render(<App />);
 
+    await waitForDefaultPlannerRole();
+
     const fileInput = screen.getByLabelText("Upload workbook");
     fireEvent.change(fileInput, {
       target: {
@@ -250,6 +401,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.endsWith("/api/v1/uploads")) {
@@ -344,6 +499,8 @@ describe("App", () => {
 
     render(<App />);
 
+    await waitForDefaultPlannerRole();
+
     fireEvent.change(screen.getByLabelText("Upload workbook"), {
       target: {
         files: [
@@ -406,6 +563,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.endsWith("/api/v1/uploads")) {
         return createJsonResponse(
           {
@@ -424,6 +585,8 @@ describe("App", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+
+    await waitForDefaultPlannerRole();
 
     fireEvent.change(screen.getByLabelText("Upload workbook"), {
       target: {
@@ -454,6 +617,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.endsWith("/api/v1/uploads")) {
@@ -589,6 +756,7 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("local")).toBeInTheDocument();
     });
+    await waitForDefaultPlannerRole();
 
     fireEvent.change(screen.getByLabelText("Upload workbook"), {
       target: {
@@ -642,12 +810,18 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       throw new Error(`Unexpected fetch call: ${url}`);
     });
 
     vi.stubGlobal("fetch", fetchMock);
 
     render(<App />);
+
+    await waitForDefaultPlannerRole();
 
     fireEvent.change(screen.getByLabelText("Upload workbook"), {
       target: {
@@ -657,7 +831,9 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Upload workbook" }));
 
     expect(screen.getByText("Only .xlsx workbooks are supported.")).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      fetchMock.mock.calls.some(([call]) => String(call).endsWith("/api/v1/uploads")),
+    ).toBe(false);
   });
 
   it("shows a friendly unavailable state when the backend cannot be reached", async () => {
@@ -668,6 +844,9 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByText("Backend unavailable")).toBeInTheDocument();
     });
+    expect(
+      screen.getByText("Current user could not be loaded. Write and export actions are disabled."),
+    ).toBeInTheDocument();
   });
 
   it("loads flow blockers across pages and groups them by blocker type", async () => {
@@ -681,6 +860,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -794,6 +977,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -1010,13 +1197,150 @@ describe("App", () => {
     expect(screen.getByText("HBM roughing")).toBeInTheDocument();
     expect(screen.getByText("HBM finish")).toBeInTheDocument();
     expect(screen.getByText("HBM page two op")).toBeInTheDocument();
-    expect(screen.getByText("HOLD_FOR_PRIORITY_FLOW")).toBeInTheDocument();
+    const queueRows = within(screen.getByLabelText("Machine queue detail")).getAllByRole("row");
+    expect(queueRows.some((row) => within(row).queryByText("HOLD_FOR_PRIORITY_FLOW") !== null)).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Open VTL queue" }));
 
     await waitFor(() => {
       expect(screen.getByText("VTL finish")).toBeInTheDocument();
     });
+  });
+
+  it("loads incoming load and applies filter parameters from the UI", async () => {
+    const incomingLoadRequests: string[] = [];
+    const allIncomingLoadRows = [
+      {
+        valve_id: "V-100",
+        customer: "Acme",
+        valve_type: "Gate",
+        component_line_no: 1,
+        component: "Body",
+        qty: 1,
+        availability_date: "2026-04-21",
+        date_confidence: "CONFIRMED",
+        current_ready_flag: true,
+        machine_types: ["HBM", "VTL"],
+        priority_score: 105,
+        sort_sequence: 1,
+        same_day_arrival_load_days: 2,
+        batch_risk_flag: true,
+      },
+      {
+        valve_id: "V-200",
+        customer: "Beta",
+        valve_type: "Globe",
+        component_line_no: 1,
+        component: "Bonnet",
+        qty: 1,
+        availability_date: "2026-04-22",
+        date_confidence: "EXPECTED",
+        current_ready_flag: false,
+        machine_types: ["HBM"],
+        priority_score: 90,
+        sort_sequence: 2,
+        same_day_arrival_load_days: null,
+        batch_risk_flag: false,
+      },
+    ];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
+      if (url.includes("/api/v1/planning-runs?latest_only=true")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "run-incoming",
+              upload_batch_id: "upload-incoming",
+              planning_start_date: "2026-04-21",
+              planning_horizon_days: 7,
+              status: "CALCULATED",
+              created_by_user_id: "user-1",
+              created_at: "2026-04-30T06:00:00.000000Z",
+              calculated_at: "2026-04-30T06:05:00.000000Z",
+              error_message: null,
+              snapshot_id: "snapshot-incoming",
+              canonical_counts: {
+                valves: 2,
+                component_statuses: 2,
+                routing_operations: 3,
+                machines: 2,
+                vendors: 0,
+              },
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 1,
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs/run-incoming/incoming-load?")) {
+        incomingLoadRequests.push(url);
+        const parsed = new URL(url);
+        const rows =
+          parsed.searchParams.get("customer") === "Beta"
+            ? allIncomingLoadRows.filter((row) => row.customer === "Beta")
+            : allIncomingLoadRows;
+        return createJsonResponse({
+          items: rows,
+          total: rows.length,
+          page: Number(parsed.searchParams.get("page") ?? 1),
+          page_size: 100,
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("local")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Incoming Load" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Scan the arrivals that feed machine queues and batch risk.")).toBeInTheDocument();
+    });
+
+    const incomingTable = screen.getByLabelText("Incoming load table");
+    expect(within(incomingTable).getByText("Gate")).toBeInTheDocument();
+    expect(within(incomingTable).getByText("HBM, VTL")).toBeInTheDocument();
+    expect(within(incomingTable).getByText("2.00")).toBeInTheDocument();
+
+    fireEvent.change(within(screen.getByLabelText("Incoming load filters")).getByLabelText("Customer"), {
+      target: { value: "Beta" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+
+    await waitFor(() => {
+      expect(incomingLoadRequests.some((requestUrl) => requestUrl.includes("customer=Beta"))).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(within(screen.getByLabelText("Incoming load table")).getByText("Beta")).toBeInTheDocument();
+    });
+    const filteredIncomingTable = screen.getByLabelText("Incoming load table");
+    expect(within(filteredIncomingTable).getByText("Globe")).toBeInTheDocument();
+    expect(within(filteredIncomingTable).queryByText("Acme")).not.toBeInTheDocument();
   });
 
   it("keeps the newest queue selection when earlier queue requests finish later", async () => {
@@ -1033,6 +1357,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -1238,6 +1566,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
         return createJsonResponse({
           items: [],
@@ -1278,6 +1610,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -1501,6 +1837,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
         return createJsonResponse({
           items: [
@@ -1593,7 +1933,28 @@ describe("App", () => {
       if (url.includes("/api/v1/planning-runs/run-7/planner-overrides")) {
         return createJsonResponse({
           planning_run_id: "run-7",
+          stale_override_count: 1,
+          current_override_count: 1,
+          replanning_policy:
+            "Override-driven replanning is deferred in V1. Planner decisions remain audit records and are not replayed during recalculation.",
           overrides: [
+            {
+              id: "override-stale",
+              planning_run_id: "run-7",
+              recommendation_id: "rec-stale",
+              entity_type: "RECOMMENDATION",
+              entity_id: "rec-stale",
+              original_recommendation: "SUBCONTRACT",
+              override_decision: "ACCEPT",
+              reason: "Accepted before recalculation",
+              remarks: "Needs fresh review",
+              stale_flag: true,
+              stale_reason:
+                "Recommendation target is stale or orphaned after recalculation. The decision remains in the action log but is not replayed in V1.",
+              user_id: "user-1",
+              user_display_name: "Planner One",
+              created_at: "2026-04-30T06:15:00.000000Z",
+            },
             {
               id: "override-1",
               planning_run_id: "run-7",
@@ -1605,6 +1966,7 @@ describe("App", () => {
               reason: "Vendor quality concern",
               remarks: null,
               stale_flag: false,
+              stale_reason: null,
               user_id: "user-1",
               user_display_name: "Planner One",
               created_at: "2026-04-30T06:10:00.000000Z",
@@ -1643,8 +2005,19 @@ describe("App", () => {
       ),
     ).toBeInTheDocument();
     expect(within(vendorSection).getByText("Vendor One")).toBeInTheDocument();
-    expect(within(actionLogSection).getByText("Planner One")).toBeInTheDocument();
+    expect(within(actionLogSection).getAllByText("Planner One")).toHaveLength(2);
     expect(within(actionLogSection).getByText("Vendor quality concern")).toBeInTheDocument();
+    expect(
+      within(actionLogSection).getByText(
+        "1 planner decision became stale after recalculation. Override-driven replanning is deferred in V1. Planner decisions remain audit records and are not replayed during recalculation.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(actionLogSection).getByText("Accepted before recalculation")).toBeInTheDocument();
+    expect(
+      within(actionLogSection).getByText(
+        "Recommendation target is stale or orphaned after recalculation. The decision remains in the action log but is not replayed in V1.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("loads recommendation and vendor pages beyond the first page", async () => {
@@ -1658,6 +2031,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -1870,6 +2247,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
         return createJsonResponse({
           items: [
@@ -2004,10 +2385,11 @@ describe("App", () => {
     expect(screen.getByText("Reason is required before saving a planner decision.")).toBeInTheDocument();
     expect(postCount).toBe(0);
 
+    const recommendationSection = screen.getByLabelText("Recommendation table");
     fireEvent.change(screen.getByLabelText("Decision reason"), {
       target: { value: "Customer escalation" },
     });
-    fireEvent.change(screen.getByLabelText("Remarks"), {
+    fireEvent.change(within(recommendationSection).getByLabelText("Remarks"), {
       target: { value: "Approve vendor path for this urgent order." },
     });
 
@@ -2017,7 +2399,6 @@ describe("App", () => {
       expect(screen.getByText("Decision recorded.")).toBeInTheDocument();
     });
 
-    const recommendationSection = screen.getByLabelText("Recommendation table");
     const actionLogSection = screen.getByLabelText("Planner action log");
 
     expect(postCount).toBe(1);
@@ -2054,6 +2435,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -2217,6 +2602,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
         return createJsonResponse({
           items: [
@@ -2353,6 +2742,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -2573,6 +2966,10 @@ describe("App", () => {
         });
       }
 
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
+      }
+
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
         latestRunRequests += 1;
 
@@ -2706,6 +3103,8 @@ describe("App", () => {
       { label: "Valve Readiness Report", reportType: "VALVE_READINESS", sheetName: "Valve_Readiness" },
       { label: "Flow Blocker Report", reportType: "FLOW_BLOCKER", sheetName: "Flow_Blockers" },
       { label: "Daily Execution Plan", reportType: "DAILY_EXECUTION", sheetName: "Daily_Execution" },
+      { label: "Weekly Planning Report", reportType: "WEEKLY_PLANNING", sheetName: "Weekly_Summary" },
+      { label: "A3 Planning Output", reportType: "A3_PLANNING", sheetName: "A3_Planning" },
     ];
     const requestedReportTypes: string[] = [];
 
@@ -2719,6 +3118,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -2800,7 +3203,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reports" }));
 
     await waitFor(() => {
-      expect(screen.getByText("First usable build exports")).toBeInTheDocument();
+      expect(screen.getByText("V1 planning exports")).toBeInTheDocument();
     });
 
     for (const report of reports) {
@@ -2835,6 +3238,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {
@@ -2916,6 +3323,108 @@ describe("App", () => {
     );
   });
 
+  it("blocks report generation and downloads for admin view-only role", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+
+      if (url.endsWith("/api/v1/health")) {
+        return createJsonResponse({
+          status: "ok",
+          app_name: "Machine Shop Planning Software",
+          version: "0.1.0",
+          environment: "local",
+        });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createJsonResponse({
+          id: "admin-1",
+          username: "admin.viewer",
+          display_name: "Admin Viewer",
+          role: "ADMIN",
+          active: true,
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs?latest_only=true")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "run-admin",
+              upload_batch_id: "upload-admin",
+              planning_start_date: "2026-04-21",
+              planning_horizon_days: 7,
+              status: "CALCULATED",
+              created_by_user_id: "user-1",
+              created_at: "2026-04-30T06:00:00.000000Z",
+              calculated_at: "2026-04-30T06:05:00.000000Z",
+              error_message: null,
+              snapshot_id: "snapshot-admin",
+              canonical_counts: {
+                valves: 2,
+                component_statuses: 2,
+                routing_operations: 3,
+                machines: 2,
+                vendors: 2,
+              },
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 1,
+        });
+      }
+
+      if (url.includes("/api/v1/planning-runs/run-admin/exports?")) {
+        return createJsonResponse({
+          items: [
+            {
+              id: "export-admin",
+              planning_run_id: "run-admin",
+              report_type: "MACHINE_LOAD",
+              file_path: "data/exports/run-admin/machine_load.xlsx",
+              file_format: "XLSX",
+              generated_by_user_id: "user-1",
+              generated_by_user_display_name: "Development Planner",
+              generated_at: "2026-05-01T09:00:00.000000Z",
+              metadata: {
+                sheet_names: ["Machine_Load"],
+                sheet_row_counts: { Machine_Load: 2 },
+              },
+              download_url: "/api/v1/exports/export-admin/download",
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 100,
+        });
+      }
+
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Admin Viewer (ADMIN)")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Reports" }));
+
+    const machineLoadCard = await screen.findByText("Machine Load Report");
+    const reportCard = machineLoadCard.closest("section");
+    expect(reportCard).not.toBeNull();
+
+    expect(
+      screen.getByText("Current role can view reports but cannot generate or download workbooks."),
+    ).toBeInTheDocument();
+    expect(within(reportCard as HTMLElement).getByRole("button", { name: "Generate workbook" })).toBeDisabled();
+    expect(within(reportCard as HTMLElement).getByRole("button", { name: "Download" })).toBeDisabled();
+    expect(within(reportCard as HTMLElement).queryByRole("link", { name: "Download" })).not.toBeInTheDocument();
+  });
+
   it("renders report generation failures as an error banner", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -2927,6 +3436,10 @@ describe("App", () => {
           version: "0.1.0",
           environment: "local",
         });
+      }
+
+      if (url.endsWith("/api/v1/auth/me")) {
+        return createDefaultPlannerUserResponse();
       }
 
       if (url.includes("/api/v1/planning-runs?latest_only=true")) {

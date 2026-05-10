@@ -889,7 +889,7 @@ Purpose: generated report/export metadata.
 | planning_run_id | TEXT | Yes | FK |
 | report_type | TEXT | Yes | Enum |
 | file_path | TEXT | Yes | Stored export file |
-| file_format | TEXT | Yes | XLSX, PDF, HTML |
+| file_format | TEXT | Yes | XLSX |
 | generated_by_user_id | TEXT | Yes | FK to users.id |
 | generated_at | TEXT | Yes | UTC timestamp |
 | metadata_json | TEXT | No | JSON |
@@ -1345,7 +1345,7 @@ Subcontract_Plan
 | Underutilized_Machine_Count | count(machine_load_summaries.underutilized_flag = 1) |
 | Assembly_Risk_Valve_Count | count(valve_readiness_summaries.otd_risk_flag = 1) |
 | Flow_Blocker_Count | count(flow_blockers) |
-| Subcontract_Recommendation_Count | count(recommendations.recommendation_type = SUBCONTRACT) |
+| Subcontract_Recommendation_Count | count(recommendations.recommendation_type in SUBCONTRACT, BATCH_SUBCONTRACT_OPPORTUNITY) |
 
 ### 16.9 A3 Planning Output
 

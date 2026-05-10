@@ -71,6 +71,7 @@ def test_create_planner_override_updates_recommendation_status_and_preserves_cal
     assert payload["reason"] == "Planner accepts current recommendation."
     assert payload["remarks"] == "Reviewed with production."
     assert payload["stale_flag"] is False
+    assert payload["stale_reason"] is None
     assert payload["user_id"] == "00000000-0000-0000-0000-000000000001"
     assert payload["user_display_name"] == "Development Planner"
 
@@ -115,7 +116,7 @@ def test_create_planner_override_for_non_recommendation_target_allows_missing_or
             "planning_run_id": planning_run_id,
             "entity_type": "VALVE",
             "entity_id": "V-100",
-            "override_decision": "hold",
+            "override_decision": "add_remarks",
             "reason": "Customer confirmation pending.",
             "remarks": None,
         },
@@ -127,7 +128,7 @@ def test_create_planner_override_for_non_recommendation_target_allows_missing_or
     assert payload["entity_id"] == "V-100"
     assert payload["recommendation_id"] is None
     assert payload["original_recommendation"] is None
-    assert payload["override_decision"] == "HOLD"
+    assert payload["override_decision"] == "ADD_REMARKS"
 
     with session_factory() as session:
         recommendations_after = [
@@ -171,6 +172,51 @@ def test_create_planner_override_rejects_blank_reason(client: TestClient) -> Non
 
     with session_factory() as session:
         recommendation_after = session.get(Recommendation, recommendation.id)
+        override_count = len(
+            list(
+                session.scalars(
+                    select(PlannerOverride).where(PlannerOverride.planning_run_id == planning_run_id)
+                )
+            )
+        )
+
+    assert recommendation_after is not None
+    assert recommendation_after.status == "PENDING"
+    assert override_count == 0
+
+
+def test_create_planner_override_rejects_unsupported_decision_without_mutating_recommendation(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        recommendation = session.scalar(
+            select(Recommendation)
+            .where(Recommendation.planning_run_id == planning_run_id)
+            .order_by(Recommendation.id.asc())
+        )
+        assert recommendation is not None
+        recommendation_id = recommendation.id
+
+    response = client.post(
+        "/api/v1/planner-overrides",
+        json={
+            "planning_run_id": planning_run_id,
+            "entity_type": "RECOMMENDATION",
+            "entity_id": recommendation_id,
+            "override_decision": "teleport_to_vendor",
+            "reason": "Unsupported decisions should not enter the audit log.",
+            "remarks": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "UNSUPPORTED_OVERRIDE_DECISION"
+
+    with session_factory() as session:
+        recommendation_after = session.get(Recommendation, recommendation_id)
         override_count = len(
             list(
                 session.scalars(
@@ -297,9 +343,76 @@ def test_list_planner_overrides_surfaces_stale_flag_after_recalculation(
 
     assert list_response.status_code == 200
     payload = list_response.json()
+    assert payload["stale_override_count"] == 1
+    assert payload["current_override_count"] == 0
+    assert payload["replanning_policy"] == (
+        "Override-driven replanning is deferred in V1. Planner decisions remain audit records and are not "
+        "replayed during recalculation."
+    )
     assert [(row["entity_type"], row["override_decision"], row["stale_flag"]) for row in payload["overrides"]] == [
         ("OPERATION", "FORCE_VENDOR", True),
     ]
+    assert payload["overrides"][0]["stale_reason"] == (
+        "Operation target is stale or orphaned after recalculation. "
+        "The decision remains in the action log but is not replayed in V1."
+    )
+
+
+def test_recalculation_marks_recommendation_decisions_stale_without_replaying_them(
+    client: TestClient,
+) -> None:
+    planning_run_id = _create_calculated_planning_run(client)
+
+    session_factory = create_session_factory()
+    with session_factory() as session:
+        recommendation = session.scalar(
+            select(Recommendation)
+            .where(Recommendation.planning_run_id == planning_run_id)
+            .order_by(Recommendation.id.asc())
+        )
+        assert recommendation is not None
+        recommendation_id = recommendation.id
+
+    create_response = client.post(
+        "/api/v1/planner-overrides",
+        json={
+            "planning_run_id": planning_run_id,
+            "entity_type": "RECOMMENDATION",
+            "entity_id": recommendation_id,
+            "override_decision": "ACCEPT",
+            "reason": "Accept before recalculation.",
+            "remarks": None,
+        },
+    )
+    assert create_response.status_code == 201
+
+    with session_factory() as session:
+        recalculate_planning_run(planning_run_id=planning_run_id, db=session)
+
+    list_response = client.get(f"/api/v1/planning-runs/{planning_run_id}/planner-overrides")
+
+    assert list_response.status_code == 200
+    payload = list_response.json()
+    assert payload["stale_override_count"] == 1
+    assert payload["current_override_count"] == 0
+    assert [(row["entity_type"], row["entity_id"], row["stale_flag"]) for row in payload["overrides"]] == [
+        ("RECOMMENDATION", recommendation_id, True),
+    ]
+    assert payload["overrides"][0]["stale_reason"] == (
+        "Recommendation target is stale or orphaned after recalculation. "
+        "The decision remains in the action log but is not replayed in V1."
+    )
+
+    with session_factory() as session:
+        recalculated_recommendations = list(
+            session.scalars(
+                select(Recommendation)
+                .where(Recommendation.planning_run_id == planning_run_id)
+                .order_by(Recommendation.id.asc())
+            )
+        )
+    assert recalculated_recommendations
+    assert all(row.status == "PENDING" for row in recalculated_recommendations)
 
 
 def _create_calculated_planning_run(client: TestClient) -> str:
